@@ -100,6 +100,7 @@ pub fn duplicate_ticket(
     let mut copy = src.clone();
     copy.id = new_id.clone();
     copy.legacy_id = None;
+    copy.uid = Some(crate::id::uid());
     copy.title = format!("{} (copy)", src.title);
     copy.comments.clear();
     copy.activity.clear();
@@ -226,41 +227,6 @@ pub fn delete_comment(
     ticket.updated = now;
     store.save_ticket(&ticket)?;
     Ok(())
-}
-
-/// Commit the board's `.wipe/` changes as an atomic, wipe-attributed git commit.
-/// When `scope` is a ticket id, only that ticket's file is committed; otherwise
-/// all of `.wipe/`. Returns the new short commit hash, or `None` if there was
-/// nothing to commit. The commit is authored *and* committed as `author`, so the
-/// board's history is attributed to the wipe identity rather than the ambient git
-/// user.
-pub fn commit_board(
-    store: &Store,
-    scope: Option<&str>,
-    message: Option<&str>,
-    author: &str,
-) -> Result<Option<String>> {
-    let ticket_path;
-    let (pathspecs, default_msg): (Vec<&str>, String) = match scope {
-        Some(raw) if crate::id::ticket_ref_digits(raw).is_some() => {
-            // Resolve (and so verify) the ticket, so a typo fails loudly instead
-            // of silently committing nothing.
-            let id = store.resolve_ticket_id(raw)?;
-            ticket_path = format!(".wipe/tickets/{id}.json");
-            (
-                vec![ticket_path.as_str()],
-                format!("chore(wipe): update {id}"),
-            )
-        }
-        Some(other) => {
-            return Err(Error::msg(format!(
-                "unknown commit target `{other}` - pass a ticket id (T-<n>) or omit to commit all of .wipe/"
-            )));
-        }
-        None => (vec![".wipe"], "chore(wipe): update board".to_string()),
-    };
-    let msg = message.unwrap_or(&default_msg);
-    crate::git::commit_paths(store.root(), &pathspecs, msg, Some(author))
 }
 
 /// Edit a comment's body in place. Sets the `edited` timestamp so the change is

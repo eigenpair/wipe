@@ -5,7 +5,6 @@ import { notifyBoardChanges, notifyForum, useWatchesOf } from '$lib/stores/notif
 import type {
   Board,
   Definitions,
-  GraphCommit,
   Health,
   Identity,
   Project,
@@ -95,7 +94,7 @@ export function markSelfChange(id: string): void {
   );
 }
 
-/** Clear all pending flash timers and the highlight set (on project switch / rewind). */
+/** Clear all pending flash timers and the highlight set (on project switch / preview). */
 function clearChanges(): void {
   for (const t of changeTimers.values()) clearTimeout(t);
   changeTimers.clear();
@@ -145,10 +144,11 @@ function markChanges(prev: Board, next: Board): void {
   }
 }
 
-// Rewind / history state - driven by the repository-wide commit graph.
-export const graph = writable<GraphCommit[]>([]);
-export const rewindCommit = writable<GraphCommit | null>(null);
-export const rewinding = derived(rewindCommit, ($c) => $c !== null);
+/** True while the board shows a preview of incoming changes from the wipe branch
+ *  (see stores/sync): live updates pause and the board is read-only. */
+export const previewing = writable<boolean>(false);
+/** Read-only board: an incoming-changes or history preview is showing. */
+export const readOnly = derived(previewing, ($p) => $p);
 
 /** Flat list of every ticket on the current board (for drawer lookup). */
 export const allTickets = derived(board, ($b) =>
@@ -257,7 +257,7 @@ export async function loadBoard(opts: { silent?: boolean } = {}): Promise<void> 
     // to a project we've since left, or that would clobber a history snapshot.
     if (seq <= boardApplied) return;
     if (project() !== proj) return;
-    if (get(rewindCommit)) return;
+    if (get(previewing)) return;
     // Drop a poll that was in flight when a local mutation landed: it may predate
     // the mutation on the server and would visibly revert it (see lastMutationSeq).
     if (seq <= lastMutationSeq) return;
@@ -307,50 +307,19 @@ export async function loadIdentities(): Promise<void> {
   }
 }
 
-/** Fetch the repository-wide commit graph for the current project. */
-export async function loadGraph(): Promise<void> {
-  try {
-    graph.set(await api.graph(project()));
-  } catch {
-    /* graph is non-critical; degrade quietly when unavailable */
-  }
+/** Show `snapshot` as the board (an incoming-changes preview), pausing live
+ *  updates until [`endPreview`]. */
+export function showPreview(snapshot: Board): void {
+  previewing.set(true);
+  board.set(snapshot);
+  boardProject = null;
+  clearChanges();
 }
 
-/** Enter rewind mode at a specific commit and load the historical snapshot. */
-export async function enterRewind(commit: GraphCommit): Promise<void> {
-  loading.set(true);
-  // Remember what we're leaving so a failed load can restore it instead of
-  // stranding the UI in rewind mode showing the LIVE board as "history".
-  const prev = get(rewindCommit);
-  const proj = project();
-  try {
-    // Set rewind first so any in-flight live poll bails before clobbering the
-    // snapshot, and mark the stored board as historical (no flash diffing).
-    rewindCommit.set(commit);
-    const snapshot = await api.boardAt(commit.hash, proj);
-    // Rapid clicks race their fetches: only apply if this is still the selected
-    // commit and project, else a slower earlier response could mislabel the board.
-    if (get(rewindCommit)?.hash !== commit.hash || project() !== proj) return;
-    board.set(snapshot);
-    boardProject = null;
-    clearChanges();
-    boardError.set(null);
-  } catch (e) {
-    // Restore the prior mode (usually live) so we never claim a snapshot we don't
-    // have - e.g. clicking a commit that predates `wipe init` (no board there).
-    if (get(rewindCommit)?.hash === commit.hash) {
-      rewindCommit.set(prev);
-      if (!prev) await loadBoard();
-    }
-    boardError.set(e instanceof Error ? e.message : String(e));
-  } finally {
-    loading.set(false);
-  }
-}
-
-/** Exit rewind mode and return to the live board. */
-export async function returnToNow(): Promise<void> {
-  rewindCommit.set(null);
+/** Leave a preview and return to the live board. */
+export async function endPreview(): Promise<void> {
+  if (!get(previewing)) return;
+  previewing.set(false);
   await loadBoard();
 }
 
@@ -565,33 +534,32 @@ export async function bootstrap(): Promise<void> {
     /* styling defaults are non-critical */
   }
   await loadProjects();
-  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities(), loadGraph()]);
+  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities()]);
   startLiveUpdates();
   startPolling();
 }
 
 /** Reload everything for the current project (after a project switch). */
 export async function reloadProject(): Promise<void> {
-  rewindCommit.set(null);
+  previewing.set(false);
   resetForumIndicator();
   clearChanges();
   // Forget the previous project's provenance so its snapshot isn't diffed against
   // the new board (which would flash every card). The old board stays on screen
   // until the new one loads, so there's no loading flash on switch.
   boardProject = null;
-  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities(), loadGraph()]);
+  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities()]);
   startPolling();
 }
 
-/** Subscribe to WS change events; refetch the live board (not while rewinding). */
+/** Subscribe to WS change events; refetch the live board (not while previewing). */
 export function startLiveUpdates(): void {
   stopLiveUpdates();
   unsubscribeWs = subscribeChanges(() => {
-    if (get(rewindCommit)) return;
+    if (get(previewing)) return;
     void loadBoard({ silent: true });
     void loadDefinitions();
     void loadIdentities();
-    void loadGraph();
   });
 }
 
@@ -614,7 +582,7 @@ let onForumView = false;
 export function startPolling(): void {
   stopPolling();
   pollTimer = setInterval(() => {
-    if (get(rewindCommit)) return; // frozen while viewing history
+    if (get(previewing)) return; // frozen while viewing history / a preview
     void loadBoard({ silent: true });
     // Check the forum a little less often (every ~2s) for the unread indicator.
     forumTick = (forumTick + 1) % 4;

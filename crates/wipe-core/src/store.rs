@@ -112,12 +112,42 @@ impl Store {
     pub fn discover(start: impl AsRef<Path>) -> Result<Self> {
         let start = start.as_ref();
         let abs = fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
-        let mut cur: Option<PathBuf> = Some(abs);
+        // No working copy inside the git repo `start` is in: a linked worktree
+        // shares the main worktree's, and a fresh clone checks one out of the
+        // wipe branch. Asked when the walk leaves the repo (before a board in an
+        // enclosing directory could answer for it), or at the end.
+        let mut located = false;
+        let mut locate = || -> Option<Store> {
+            if located {
+                return None;
+            }
+            located = true;
+            let root = crate::sync::locate(start)?;
+            root.join(WIPE_DIR).is_dir().then_some(Store { root })
+        };
+        let ceilings = ceilings();
+        let mut cur: Option<PathBuf> = Some(abs.clone());
         while let Some(dir) = cur {
             if dir.join(WIPE_DIR).is_dir() {
                 return Ok(Store { root: dir });
             }
+            if dir.join(".git").exists() {
+                if let Some(s) = locate() {
+                    return Ok(s);
+                }
+            }
+            if ceilings.contains(&dir) {
+                return Err(Error::not_initialized(start));
+            }
             cur = dir.parent().map(Path::to_path_buf);
+        }
+        if let Some(s) = locate() {
+            if ceilings
+                .iter()
+                .all(|c| !abs.starts_with(c) || s.root.starts_with(c))
+            {
+                return Ok(s);
+            }
         }
         Err(Error::not_initialized(start))
     }
@@ -466,6 +496,20 @@ impl Store {
     }
 }
 
+/// Directories board discovery never walks above (`$WIPE_CEILING_DIRS`, a path
+/// list like `$PATH`), like git's `GIT_CEILING_DIRECTORIES`: a sandbox nested in
+/// a project must never fall through to the project's own board.
+fn ceilings() -> Vec<PathBuf> {
+    std::env::var_os("WIPE_CEILING_DIRS")
+        .map(|v| {
+            std::env::split_paths(&v)
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| fs::canonicalize(&p).unwrap_or(p))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Guard for [`Store::lock`]; the exclusive lock is held until it is dropped.
 #[derive(Debug)]
 pub struct BoardLock {
@@ -508,7 +552,7 @@ fn ticket_counter(id: &str, hex: bool) -> Option<u64> {
 
 // --- low-level IO ----------------------------------------------------------
 
-fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| Error::msg(format!("path `{}` has no parent", path.display())))?;

@@ -193,6 +193,11 @@ pub struct Ticket {
     /// `T-23` for what is now `T-017`), so old references still resolve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_id: Option<String>,
+    /// A hidden, random id that never changes, whatever happens to `id`: how a
+    /// merge tells "the same ticket" from "another ticket that got the same
+    /// number". Absent on tickets created before 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     /// Short title.
     pub title: String,
     /// Long-form body (Markdown allowed inside the JSON string).
@@ -259,6 +264,7 @@ impl Ticket {
             version: FORMAT_VERSION,
             id: id.into(),
             legacy_id: None,
+            uid: Some(crate::id::uid()),
             title: title.into(),
             body: String::new(),
             original: None,
@@ -490,6 +496,9 @@ pub struct Thread {
     pub version: u32,
     /// Thread ID, e.g. `F-1` (also the ID of its root post).
     pub id: String,
+    /// A hidden, random id that never changes (see [`Ticket::uid`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     /// Thread title (the headline of the root post).
     pub title: String,
     /// The root post and, nested within it, the whole reply tree.

@@ -12,17 +12,11 @@
 // After running, commit and tag:
 //   git commit -am "chore(release): v0.1.2" && git tag v0.1.2 && git push origin main v0.1.2
 
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  readdirSync,
-  rmSync,
-  cpSync,
-} from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { embedUi } from "./embed-ui.mjs";
 
 const version = process.argv[2];
 if (!version || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(version)) {
@@ -38,7 +32,7 @@ const skipUi = process.argv.includes("--skip-ui");
 // stale embedded UI. (The embedded assets are committed and baked into the binary;
 // a forgotten rebuild is how a release silently ships an old board UI.)
 if (!skipUi) {
-  embedUi();
+  embedUi(root);
 }
 
 function edit(rel, transform) {
@@ -92,23 +86,3 @@ console.log(`\nVersion set to ${version}. Next:`);
 console.log(`  git commit -am "chore(release): v${version}"`);
 console.log(`  git tag v${version} && git push origin main v${version}`);
 
-function embedUi() {
-  const ui = join(root, "apps/desktop");
-  if (!existsSync(join(ui, "package.json"))) return;
-  const assets = join(root, "crates/wipe-daemon/assets");
-  console.log("Rebuilding + embedding the desktop UI…");
-  // Always install: a bumped pnpm-lock.yaml (deps changed since last build) would
-  // otherwise build against stale node_modules. --frozen-lockfile is fast when
-  // already up to date and fails loudly if the lockfile is out of sync.
-  execSync("pnpm install --frozen-lockfile", { cwd: ui, stdio: "inherit" });
-  execSync("pnpm build", { cwd: ui, stdio: "inherit" });
-  const build = join(ui, "build");
-  if (!existsSync(build)) throw new Error(`expected SvelteKit output at ${build}`);
-  // Clear the staged assets (keep .gitkeep) and copy the fresh build in.
-  for (const entry of readdirSync(assets)) {
-    if (entry === ".gitkeep") continue;
-    rmSync(join(assets, entry), { recursive: true, force: true });
-  }
-  cpSync(build, assets, { recursive: true });
-  console.log("  embedded fresh UI into crates/wipe-daemon/assets\n");
-}

@@ -45,6 +45,28 @@ installed locally you can match CI more closely with:
 cargo nextest run --workspace
 ```
 
+### The local sandbox
+
+Try a build the way users and agents will - before it is released - in an
+untracked sandbox under `tests/sandbox/`:
+
+```sh
+node scripts/sandbox.mjs setup        # build, install into the sandbox, pin it, create the scenario
+node scripts/sandbox.mjs update --ui  # after changes: rebuild (and the board UI) and swap it in
+node scripts/sandbox.mjs reset        # fresh scenario
+node scripts/sandbox.mjs status       # what's installed and pinned
+node scripts/sandbox.mjs remove       # unpin and delete it
+```
+
+The scenario is a small team: a bare `remote.git` and two clones, `alice/` and
+`bob/`, sharing one board on the wipe branch. Any `wipe` run under
+`tests/sandbox/` - yours or an agent's - runs the sandbox build with its own
+config (board registry, identities), because the directory is pinned with
+`wipe dev link`: an installed wipe (1.0+) hands every command run there to the
+pinned binary. Pins live in your user config, never in a repo. With an older
+wipe installed, activate the sandbox per shell instead
+(`. tests/sandbox/activate.ps1` or `source tests/sandbox/activate.sh`).
+
 ## Formatting
 
 ```sh

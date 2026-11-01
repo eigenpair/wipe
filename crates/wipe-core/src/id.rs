@@ -43,6 +43,12 @@ pub fn acceptance_id(n: u64) -> String {
     format!("ac-{n}")
 }
 
+/// A fresh lifetime id for a ticket or thread: 16 random hex digits (64 bits),
+/// so two clones creating entities at the same moment never pick the same one.
+pub fn uid() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
+}
+
 /// Generate a fresh, URL-safe bearer token (a hyphen-free UUIDv4), used to guard
 /// an exposed daemon (`wipe serve --expose ...`).
 pub fn token() -> String {

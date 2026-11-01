@@ -21,7 +21,8 @@ apps/desktop/src-tauri/target
 # npm, prebuilt binaries). Rebuild + commit it with `scripts/embed-ui` whenever
 # the desktop UI changes. (node_modules etc. are still ignored globally above.)
 
-# Local sandbox: persistent mock projects for running the CLI / agents locally
+# Local sandbox for testing a build before release (node scripts/sandbox.mjs):
+# the build under test, its own config, and a scenario of mock projects.
 tests/sandbox/
 
 # The repo does not dogfood its own board; a stray root .wipe/ is never committed.

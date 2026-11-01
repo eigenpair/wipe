@@ -31,17 +31,49 @@ pub enum Mode {
 /// How `command` takes part in awareness.
 pub fn mode(command: &Command) -> Mode {
     match command {
-        Command::Inbox(_) | Command::Watch(_) => Mode::Absorb,
+        Command::Inbox(_)
+        | Command::Watch(_)
+        | Command::Sync(_)
+        | Command::Commit(_)
+        | Command::Restore(_)
+        | Command::Migrate(_) => Mode::Absorb,
         Command::Init(_)
         | Command::Onboard(_)
         | Command::Identity(_)
         | Command::Serve(_)
         | Command::Tray(_)
         | Command::Update(_)
+        | Command::Dev(_)
         | Command::Status(_)
         | Command::Completions { .. } => Mode::Skip,
         _ => Mode::Report,
     }
+}
+
+/// Whether a command ends with the board-sync lines (uncommitted / incoming
+/// board changes). Not for the commands that report them themselves, nor for
+/// setup and long-running ones.
+pub fn sync_lines(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Commit(_)
+            | Command::Sync(_)
+            | Command::Log(_)
+            | Command::Migrate(_)
+            | Command::Status(_)
+            | Command::Doctor
+            | Command::Init(_)
+            | Command::Onboard(_)
+            | Command::Identity(_)
+            | Command::Serve(_)
+            | Command::Tray(_)
+            | Command::Update(_)
+            | Command::Dev(_)
+            | Command::Watch(_)
+            | Command::Skill { .. }
+            | Command::Scan(_)
+            | Command::Completions { .. }
+    )
 }
 
 /// Whether a command hands in or finishes a ticket: the moment an agent picks

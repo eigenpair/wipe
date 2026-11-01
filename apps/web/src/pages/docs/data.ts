@@ -488,15 +488,33 @@ export const CLI_GROUPS: CliGroup[] = [
     ],
   },
   {
-    name: "commit",
+    name: "commit / sync",
     summary:
-      "Commit the board's .wipe/ changes as one atomic, wipe-attributed git commit.",
+      "The board lives on its own `wipe` branch - the single source of truth. Board edits stay local until you commit them; incoming changes from your team are applied with sync. Both merge per field and stop at real conflicts.",
     commands: [
       {
         command: "wipe commit",
         description:
-          "Stage and commit only .wipe/ (or a single ticket's file), authored as your identity. Set board.autocommit to do it automatically after every change.",
-        example: 'wipe commit T-3 -m "spec T-3"',
+          "Record your board changes as one commit on the wipe branch, attributed to your identity, and publish it. Incoming changes are merged into your board first. A ticket id commits just that ticket. Never automatic: commit once per finished piece of work.",
+        example: 'wipe commit -m "plan the signup flow"',
+      },
+      {
+        command: "wipe sync",
+        description:
+          "Apply incoming board changes from the wipe branch; your uncommitted changes stay on top (ids both sides used are renumbered on your side). --check only shows what is uncommitted and incoming.",
+        example: "wipe sync --check",
+      },
+      {
+        command: "--take / --resolve",
+        description:
+          "On a conflict (the same field changed both ways, a delete against an edit, a card moved to two lists) commit and sync print each one with an id and change nothing. Settle all with --take ours|theirs, or one with --resolve <id>=ours|theirs.",
+        example: "wipe sync --resolve 'tickets/T-003.json#/title=ours'",
+      },
+      {
+        command: "wipe migrate",
+        description:
+          "Move a board from before 1.0 (tracked with your code) onto the wipe branch once: it is published, and .wipe/ is untracked and ignored on the code branch. On an older branch that still tracks .wipe/, untracks it there.",
+        example: "wipe migrate",
       },
     ],
   },

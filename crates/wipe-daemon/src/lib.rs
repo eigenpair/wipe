@@ -9,6 +9,7 @@ mod api;
 mod assets;
 mod net;
 mod registry;
+mod sync;
 mod watch;
 
 use std::net::{IpAddr, SocketAddr};
@@ -67,11 +68,17 @@ fn router(state: AppState) -> Router {
         .route("/api/scan", post(api::rescan))
         .route("/api/projects", get(api::projects))
         .route("/api/board", get(api::board))
-        .route("/api/history", get(api::history))
-        .route("/api/board/at", get(api::board_at))
+        .route("/api/sync", get(sync::status))
+        .route("/api/sync/fetch", post(sync::fetch))
+        .route("/api/sync/preview", post(sync::preview))
+        .route("/api/sync/apply", post(sync::apply))
+        .route("/api/sync/commit", post(sync::commit))
+        .route("/api/sync/migrate", post(sync::migrate))
+        .route("/api/sync/log", get(sync::log))
+        .route("/api/sync/at", get(sync::at))
+        .route("/api/sync/take", post(sync::take))
         .route("/api/board/translate-ids", post(api::translate_ids))
         .route("/api/definitions", get(api::definitions))
-        .route("/api/graph", get(api::graph))
         .route("/api/labels", post(api::create_label))
         .route(
             "/api/labels/{name}",
@@ -717,6 +724,142 @@ mod tests {
         let behind_proxy =
             router(proxied).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5555))));
         assert_eq!(get(behind_proxy).await, StatusCode::UNAUTHORIZED);
+    }
+
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> serde_json::Value {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// The UI's flows on a real remote: commit, then see, preview and apply a
+    /// teammate's commit.
+    #[tokio::test]
+    async fn sync_commit_preview_and_apply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let remote = tmp.path().join("remote.git");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                remote.to_str().unwrap(),
+            ],
+        );
+        let a = tmp.path().join("a");
+        git(
+            tmp.path(),
+            &["clone", "-q", remote.to_str().unwrap(), a.to_str().unwrap()],
+        );
+        git(&a, &["config", "user.name", "Ada"]);
+        git(&a, &["config", "user.email", "ada@example.com"]);
+        let store = Store::init(&a, "Synced", chrono::Utc::now()).unwrap();
+        wipe_core::sync::adopt_new_board(&store, "Ada <ada@example.com>").unwrap();
+        let new = |s: &Store, title: &str| {
+            wipe_core::ops::create_ticket(
+                s,
+                wipe_core::ops::NewTicket {
+                    title: title.into(),
+                    ..Default::default()
+                },
+                "tester",
+                chrono::Utc::now(),
+            )
+            .unwrap()
+        };
+        new(&store, "Mine");
+        let app = router(test_state(store.root().to_path_buf()));
+
+        let st = call(&app, "GET", "/api/sync", serde_json::json!(null)).await;
+        assert_eq!(st["mode"], "branch");
+        assert_eq!(st["local"][0]["kind"], "created");
+        let c = call(
+            &app,
+            "POST",
+            "/api/sync/commit",
+            serde_json::json!({ "message": "from the UI" }),
+        )
+        .await;
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["message"], "from the UI");
+        let st = call(&app, "GET", "/api/sync", serde_json::json!(null)).await;
+        assert_eq!(st["local"].as_array().unwrap().len(), 0);
+
+        // A teammate's clone commits a ticket of its own.
+        let b = tmp.path().join("b");
+        git(
+            tmp.path(),
+            &["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()],
+        );
+        let bs = Store::discover(&b).unwrap();
+        new(&bs, "Theirs");
+        wipe_core::sync::commit(
+            &bs,
+            Some("teammate"),
+            None,
+            "Bob <b@example.com>",
+            &Default::default(),
+        )
+        .unwrap();
+
+        let st = call(
+            &app,
+            "POST",
+            "/api/sync/fetch?force=true",
+            serde_json::json!(null),
+        )
+        .await;
+        assert_eq!(st["incoming"].as_array().unwrap().len(), 1, "{st}");
+        assert_eq!(st["commits"][0]["subject"], "teammate");
+        let p = call(&app, "POST", "/api/sync/preview", serde_json::json!({})).await;
+        let titles: Vec<&str> = p["board"]["lists"][0]["tickets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles, ["Mine", "Theirs"]);
+        assert!(
+            store.load_ticket("T-002").is_err(),
+            "preview writes nothing"
+        );
+        let r = call(&app, "POST", "/api/sync/apply", serde_json::json!({})).await;
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(store.load_ticket("T-002").unwrap().title, "Theirs");
+        let st = call(&app, "GET", "/api/sync", serde_json::json!(null)).await;
+        assert_eq!(st["incoming"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

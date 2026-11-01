@@ -3,8 +3,7 @@
   import {
     RefreshCw,
     Settings,
-    History,
-    RotateCcw,
+    GitCommitVertical,
     WifiOff,
     LayoutGrid,
     MessagesSquare,
@@ -16,8 +15,7 @@
     health,
     healthError,
     currentProject,
-    rewinding,
-    rewindCommit,
+    readOnly,
     loading,
     forumUnread,
     bootstrap,
@@ -25,7 +23,6 @@
     loadBoard,
     loadProjects,
     reloadProject,
-    returnToNow,
     setForumView,
     stopLiveUpdates
   } from '$lib/stores/board';
@@ -35,16 +32,16 @@
   import NotifyMenu from '$lib/components/NotifyMenu.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import { openRequest } from '$lib/stores/notify';
-  import { formatDate } from '$lib/utils';
   import Board from '$lib/components/Board.svelte';
   import Forum from '$lib/components/Forum.svelte';
   import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
   import Lightbox from '$lib/components/Lightbox.svelte';
   import TicketModal from '$lib/components/TicketModal.svelte';
   import NewTicketDialog from '$lib/components/NewTicketDialog.svelte';
-  import GitGraph from '$lib/components/GitGraph.svelte';
+  import HistoryDrawer from '$lib/components/HistoryDrawer.svelte';
   import BoardSettings from '$lib/components/BoardSettings.svelte';
   import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+  import SyncBar from '$lib/components/SyncBar.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import type { Ticket } from '$lib/types';
 
@@ -183,8 +180,17 @@
       </button>
     </div>
 
+    <div class="syncslot">
+      <SyncBar
+        onopen={(id) => {
+          view = 'board';
+          modalTicketId = id;
+        }}
+      />
+    </div>
+
     <div class="right">
-      {#if $board && $board.ids !== 'hex' && !$rewinding}
+      {#if $board && $board.ids !== 'hex' && !$readOnly}
         <button
           class="ib wide"
           disabled={translating}
@@ -205,8 +211,14 @@
       {/if}
 
       <NotifyMenu />
-      <button class="ib" aria-label="History" title="History" onclick={() => (historyOpen = true)}>
-        <History size={16} />
+      <button
+        class="ib"
+        class:on={historyOpen}
+        aria-label="Board history"
+        title="Board history - the wipe branch"
+        onclick={() => (historyOpen = !historyOpen)}
+      >
+        <GitCommitVertical size={16} />
       </button>
       <button class="ib" aria-label="Refresh" title="Refresh" onclick={refresh}>
         <RefreshCw size={16} class={$loading ? 'spin' : ''} />
@@ -240,15 +252,6 @@
     {:else if view === 'forum'}
       <div class="boardwrap"><Forum /></div>
     {:else}
-      {#if $rewinding && $rewindCommit}
-        <div class="banner rewind">
-          <span class="rw-tag"><History size={13} /> Viewing snapshot</span>
-          <span class="rw-hash">{$rewindCommit.short}</span>
-          <span class="rw-subj">{$rewindCommit.subject}</span>
-          <span class="rw-meta">· {$rewindCommit.author_name} · {formatDate($rewindCommit.date)}</span>
-          <button class="rw-now" onclick={returnToNow}><RotateCcw size={13} /> Return to now</button>
-        </div>
-      {/if}
 
       {#if $boardError}
         <div class="banner err">{$boardError}</div>
@@ -268,10 +271,10 @@
 </div>
 
 <Toasts />
-<QuickJump enabled={view === 'board' && !!$health && !$rewinding} onopen={openTicket} />
+<QuickJump enabled={view === 'board' && !!$health && !$readOnly} onopen={openTicket} />
 <TicketModal bind:ticketId={modalTicketId} />
 <NewTicketDialog bind:open={newTicketOpen} listId={newTicketList} listName={newTicketName} />
-<GitGraph bind:open={historyOpen} />
+<HistoryDrawer bind:open={historyOpen} />
 <BoardSettings bind:open={settingsOpen} />
 <Lightbox />
 
@@ -342,6 +345,12 @@
     color: var(--wp-text);
     box-shadow: var(--wp-shadow);
   }
+  .syncslot {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+  }
   .right {
     margin-left: auto;
     display: flex;
@@ -383,6 +392,10 @@
   .ib:hover {
     background: var(--wp-elevated);
     color: var(--wp-text);
+  }
+  .ib.on {
+    color: var(--wp-accent);
+    border-color: color-mix(in srgb, var(--wp-accent) 45%, var(--wp-border));
   }
   .ib.wide {
     width: auto;
@@ -427,58 +440,6 @@
     background: color-mix(in srgb, var(--wp-error) 12%, transparent);
     color: var(--wp-error);
     font-size: 13px;
-  }
-  .banner.rewind {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-radius: var(--wp-r-md);
-    border: 1px solid var(--wp-accent);
-    background: color-mix(in srgb, var(--wp-accent) 10%, transparent);
-    font-size: 13px;
-    min-width: 0;
-  }
-  .rw-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    flex: none;
-    font-weight: 500;
-    color: var(--wp-accent);
-  }
-  .rw-hash {
-    font-family: var(--wp-font-mono);
-    color: var(--wp-accent);
-    flex: none;
-  }
-  .rw-subj {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--wp-text);
-  }
-  .rw-meta {
-    color: var(--wp-text-subtle);
-    white-space: nowrap;
-    flex: none;
-  }
-  .rw-now {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    flex: none;
-    padding: 4px 10px;
-    border-radius: var(--wp-r-sm);
-    border: 1px solid var(--wp-border);
-    background: var(--wp-card);
-    color: var(--wp-text);
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .rw-now:hover {
-    background: var(--wp-elevated);
   }
   .offline {
     flex: 1;
@@ -554,6 +515,13 @@
       order: 10;
       width: 100%;
     }
+    .syncslot {
+      order: 11;
+      flex-basis: 100%;
+    }
+    .syncslot:empty {
+      display: none;
+    }
     .viewtabs button {
       flex: 1;
       justify-content: center;
@@ -570,12 +538,8 @@
     .main {
       padding: 10px 0 0;
     }
-    .banner.err,
-    .banner.rewind {
+    .banner.err {
       margin: 0 12px;
-    }
-    .banner.rewind {
-      flex-wrap: wrap;
     }
   }
   .offactions {

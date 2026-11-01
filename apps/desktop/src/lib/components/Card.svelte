@@ -7,6 +7,8 @@
   import Avatar from './Avatar.svelte';
   import CardMenu from './CardMenu.svelte';
   import { definitions, identities, currentProject, recentlyChanged } from '$lib/stores/board';
+  import { Check } from 'lucide-svelte';
+  import { localMarks, incomingMarks, syncMode, syncBusy, taken, takeChange, phrase } from '$lib/stores/sync';
   import { searchMatches, searchTerms, jumpTarget, highlight } from '$lib/stores/search';
   import { mediaUrl } from '$lib/api';
   import { labelColorFor, priorityColor, mediaKind } from '$lib/utils';
@@ -35,6 +37,26 @@
     match?.labels ? ticket.labels.map((l) => highlight(l, $searchTerms)) : null
   );
   let jumped = $derived($jumpTarget === ticket.id);
+
+  // Board sync: your uncommitted change to this ticket (always, subtly), or -
+  // while previewing incoming changes or a past commit - what that changes on it.
+  let previewing = $derived($syncMode === 'incoming' || $syncMode === 'history');
+  let localMark = $derived($localMarks.get(ticket.id));
+  let inMark = $derived(previewing ? $incomingMarks.get(ticket.id) : undefined);
+  // The mark that styles the card now, and how loudly.
+  let syncMark = $derived(previewing ? inMark : localMark);
+  let loud = $derived($syncMode !== 'idle' && !!syncMark);
+  let quiet = $derived($syncMode !== 'idle' && !syncMark);
+  let applied = $derived($taken.has(`ticket:${ticket.id}`));
+  let syncChips = $derived(
+    syncMark ? [...new Set(syncMark.changes.map(phrase))].slice(0, 3) : []
+  );
+  let syncTitle = $derived(
+    syncMark
+      ? ($syncMode === 'incoming' ? 'Incoming: ' : $syncMode === 'history' ? 'In this commit: ' : 'Not committed: ') +
+        syncMark.changes.map(phrase).join(' · ')
+      : ''
+  );
 
   // Title typewriter: when a card first appears because an agent/human just
   // created it, reveal the title character-by-character (as if being typed) for
@@ -85,12 +107,44 @@
   class:edited={change === 'edited'}
   class:materialize={change === 'new'}
   class:floated={change === 'moved'}
+  class:sync-mark={!!syncMark}
+  class:sync-loud={loud}
+  class:sync-quiet={quiet}
+  class:sync-in={previewing && !!syncMark}
+  class:sync-local={!previewing && !!syncMark}
+  data-mark={syncMark?.mark}
+  title={syncTitle || undefined}
   role="button"
   tabindex="0"
   onclick={() => onopen(ticket)}
   onkeydown={(e) => (e.key === 'Enter' ? onopen(ticket) : null)}
 >
   <div class="card-menu"><CardMenu {ticket} /></div>
+
+  {#if previewing && syncMark}
+    {#if applied}
+      <span class="sync-applied"><Check size={12} /> Applied</span>
+    {:else}
+      <button
+        class="sync-apply"
+        disabled={$syncBusy}
+        title={$syncMode === 'history'
+          ? 'Bring this ticket into your board as it was after this commit'
+          : "Bring just this ticket's change into your board"}
+        onclick={(e) => {
+          e.stopPropagation();
+          if (syncMark) void takeChange(syncMark.changes[0]);
+        }}
+        onkeydown={(e) => e.stopPropagation()}>Apply</button
+      >
+    {/if}
+  {/if}
+
+  {#if loud}
+    <div class="sync-chips">
+      {#each syncChips as c (c)}<span class="sync-chip">{c}</span>{/each}
+    </div>
+  {/if}
 
   {#if cover}
     <div class="cover">
@@ -131,7 +185,7 @@
   {/if}
 
   <div class="footer">
-    <span class="tid">{ticket.id}</span>
+    <span class="tid">{ticket.id}{#if syncMark && !loud}<span class="sync-dot" aria-label={syncTitle}></span>{/if}</span>
     <div class="avatars">
       {#each ticket.assignees.slice(0, 4) as a (a)}
         <Avatar id={a} identity={identityFor(a)} size={22} />
@@ -404,5 +458,133 @@
   /* All acceptance criteria met - reads in the criteria's own (sage) hue. */
   .count.ac-complete {
     color: #7e9b7a;
+  }
+  /* Board sync. Each diff kind has its color; a card carries at most one. */
+  .card[data-mark='created'] {
+    --sm: var(--wp-d-created);
+  }
+  .card[data-mark='deleted'] {
+    --sm: var(--wp-d-deleted);
+  }
+  .card[data-mark='moved'] {
+    --sm: var(--wp-d-moved);
+  }
+  .card[data-mark='edited'] {
+    --sm: var(--wp-d-edited);
+  }
+  .card[data-mark='commented'] {
+    --sm: var(--wp-d-commented);
+  }
+  .card[data-mark='checked'] {
+    --sm: var(--wp-d-checked);
+  }
+  /* Your uncommitted change reads as a draft: a dashed outline in its kind's
+     color (and a dot by the id). Committing makes it solid again. */
+  .card.sync-local {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--sm) 70%, var(--wp-border));
+  }
+  .card.sync-local.sync-loud {
+    border-width: 1.5px;
+    border-color: var(--sm);
+  }
+  .sync-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    border-radius: 50%;
+    vertical-align: middle;
+    background: var(--sm);
+  }
+  /* A preview is open (incoming / a past commit): its cards stand out, the rest recede. */
+  .card.sync-in {
+    border-color: color-mix(in srgb, var(--sm) 70%, var(--wp-border));
+    background: color-mix(in srgb, var(--sm) 7%, var(--wp-card));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--sm) 45%, transparent),
+      0 6px 18px color-mix(in srgb, var(--sm) 16%, transparent);
+  }
+  .card.sync-in {
+    animation: sync-arrive var(--wp-slow) var(--wp-ease);
+  }
+  /* Apply just this card's change: shown on hover, bottom right. */
+  .sync-apply {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    z-index: 3;
+    padding: 3px 10px;
+    border-radius: var(--wp-r-pill);
+    border: 1px solid var(--wp-accent);
+    background: var(--wp-accent);
+    color: var(--wp-on-accent);
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    opacity: 0;
+    transform: translateY(2px);
+    transition:
+      opacity var(--wp-fast) var(--wp-ease),
+      transform var(--wp-fast) var(--wp-ease);
+  }
+  .card:hover .sync-apply,
+  .sync-apply:focus-visible {
+    opacity: 1;
+    transform: none;
+  }
+  .sync-applied {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    border-radius: var(--wp-r-pill);
+    background: var(--wp-card);
+    color: var(--wp-d-created);
+    font-size: 11.5px;
+  }
+  @media (hover: none) {
+    .sync-apply {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes sync-arrive {
+    from {
+      transform: translateY(-3px);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--sm) 30%, transparent);
+    }
+  }
+  .card.sync-quiet {
+    opacity: 0.45;
+    filter: saturate(0.6);
+    transition: opacity var(--wp-base) var(--wp-ease);
+  }
+  .card.sync-quiet:hover {
+    opacity: 0.85;
+  }
+  .sync-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-right: 26px;
+  }
+  .sync-chip {
+    font-size: 11px;
+    line-height: 16px;
+    padding: 1px 7px;
+    border-radius: var(--wp-r-pill);
+    border: 1px solid color-mix(in srgb, var(--sm) 40%, transparent);
+    background: color-mix(in srgb, var(--sm) 15%, transparent);
+    color: var(--wp-text);
+    white-space: nowrap;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card.sync-in {
+      animation: none;
+    }
   }
 </style>

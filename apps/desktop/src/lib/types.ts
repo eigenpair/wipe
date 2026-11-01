@@ -120,18 +120,6 @@ export interface CommitInfo {
   subject: string;
 }
 
-/** A node in the repository-wide commit graph (`GET /api/graph`). */
-export interface GraphCommit {
-  hash: string;
-  short: string;
-  parents: string[];
-  refs: string[];
-  author_name: string;
-  date: string;
-  subject: string;
-  /** True when this commit changed `.wipe/` - i.e. a board checkpoint. */
-  board: boolean;
-}
 
 export interface LabelDef {
   name: string;
@@ -228,4 +216,103 @@ export interface TicketPatch {
   priority?: string | null;
   labels?: string[];
   assignees?: string[];
+}
+
+// --- board sync (the wipe branch) ------------------------------------------
+
+/** One typed board change (see wipe-core `sync::Change`). */
+export interface SyncChange {
+  /** `ticket`, `thread`, `list`, `label`, `board`, `file`. */
+  scope: string;
+  /** `T-003`, `F-2`, a list or label id, a file path. */
+  id: string;
+  /** created, deleted, moved, reordered, renamed, edited, commented, checked, posted. */
+  kind: string;
+  title: string;
+  from?: string;
+  to?: string;
+  fields?: string[];
+  count: number;
+  detail?: string;
+  by?: string[];
+}
+
+export interface SyncCommit {
+  hash: string;
+  short: string;
+  author_name: string;
+  author_email: string;
+  date: string;
+  subject: string;
+}
+
+/** Where the board stands against the wipe branch. */
+export interface SyncStatus {
+  /** `branch` (normal), `unmigrated` (board predates the branch), `tracked`
+   *  (this checkout still tracks .wipe/), `none` (no git). */
+  mode: 'branch' | 'unmigrated' | 'tracked' | 'none';
+  branch: string;
+  remote: string | null;
+  board_dir: string;
+  base: string | null;
+  upstream: string | null;
+  /** Uncommitted changes in the working copy. */
+  local: SyncChange[];
+  /** Changes on the branch not yet in the working copy. */
+  incoming: SyncChange[];
+  commits: SyncCommit[];
+  unpublished: number;
+  rewritten: boolean;
+  fetched: string | null;
+  fetch_error?: string;
+}
+
+export type SyncSide = 'ours' | 'theirs';
+
+/** A disagreement the merge needs settled (see wipe-core `sync::Conflict`). */
+export interface SyncConflict {
+  id: string;
+  entity: string;
+  field: string;
+  base: unknown;
+  ours: unknown;
+  theirs: unknown;
+}
+
+/** One commit of the wipe branch, placed relative to your board. */
+export interface SyncLogEntry extends SyncCommit {
+  /** `incoming`, `unpublished`, `base` (what your board is based on), `past`. */
+  place: 'incoming' | 'unpublished' | 'base' | 'past';
+}
+
+/** What to take on its own (see wipe-core `sync::take::Entity`). */
+export interface SyncEntity {
+  scope: string;
+  id: string;
+  fields: string[];
+}
+
+export interface SyncResolutions {
+  default?: SyncSide | null;
+  picks: Record<string, SyncSide>;
+}
+
+export interface SyncPreview {
+  board: Board;
+  incoming: SyncChange[];
+  conflicts: SyncConflict[];
+  renumbered: { from: string; to: string }[];
+}
+
+export interface SyncResult {
+  ok: boolean;
+  conflicts?: SyncConflict[];
+  applied?: SyncChange[];
+  changes?: SyncChange[];
+  merged?: SyncChange[];
+  short?: string | null;
+  message?: string;
+  published?: number;
+  renumbered?: { from: string; to: string }[];
+  error?: string;
 }

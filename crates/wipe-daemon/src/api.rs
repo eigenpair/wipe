@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 use wipe_core::forum::{self, NewReply, NewThread, SearchQuery};
 use wipe_core::model::{Board, IdentityKind, Ticket};
 use wipe_core::ops::{self, NewTicket, TicketPatch};
-use wipe_core::{git, Store};
+use wipe_core::Store;
 
 /// Shared server state.
 #[derive(Clone)]
@@ -195,18 +195,18 @@ impl IntoResponse for ApiError {
     }
 }
 
-type ApiResult = Result<Json<Value>, ApiError>;
+pub(crate) type ApiResult = Result<Json<Value>, ApiError>;
 
 /// Query string carrying an optional project root.
 #[derive(Debug, Deserialize)]
 pub struct ProjectQuery {
-    project: Option<String>,
+    pub(crate) project: Option<String>,
 }
 
 /// Resolve which board a request targets. Prefer the explicit `project` (every UI
 /// request sends one); fall back to the daemon's launch project. Erroring when
 /// neither is available keeps a stray request from silently hitting the wrong board.
-fn store_for(state: &AppState, project: Option<String>) -> Result<Store, ApiError> {
+pub(crate) fn store_for(state: &AppState, project: Option<String>) -> Result<Store, ApiError> {
     let root = project
         .map(PathBuf::from)
         .or_else(|| state.current.clone())
@@ -214,7 +214,7 @@ fn store_for(state: &AppState, project: Option<String>) -> Result<Store, ApiErro
     Ok(Store::open(root)?)
 }
 
-fn notify(state: &AppState) {
+pub(crate) fn notify(state: &AppState) {
     let _ = state.tx.send("changed".to_string());
 }
 
@@ -226,13 +226,13 @@ fn notify(state: &AppState) {
 /// bearer token can't tie a request to a specific person, so honoring a
 /// client-supplied identity would let a remote caller impersonate anyone. In that
 /// mode we fall back to the board's own resolved identity.
-fn resolve_actor(state: &AppState, store: &Store, provided: Option<String>) -> String {
+pub(crate) fn resolve_actor(state: &AppState, store: &Store, provided: Option<String>) -> String {
     let trusted = TRUSTED.try_with(|t| *t).unwrap_or(!state.exposed);
     let provided = if trusted { provided } else { None };
     ops::resolve_identity(Some(store), provided.as_deref())
 }
 
-fn board_json(board: &Board, view: &[(String, Vec<Ticket>)]) -> Value {
+pub(crate) fn board_json(board: &Board, view: &[(String, Vec<Ticket>)]) -> Value {
     let lists: Vec<Value> = view
         .iter()
         .map(|(list_id, tickets)| {
@@ -437,46 +437,6 @@ pub async fn board(
         (*entry.body).clone(),
     )
         .into_response())
-}
-
-/// `GET /api/history` - commits touching `.wipe/`, most recent first.
-pub async fn history(State(state): State<AppState>, Query(q): Query<ProjectQuery>) -> ApiResult {
-    let store = store_for(&state, q.project)?;
-    let commits = git::log(store.root(), Some(".wipe"), Some(200))?;
-    Ok(Json(json!({ "commits": commits })))
-}
-
-/// Query for a historical board snapshot.
-#[derive(Debug, Deserialize)]
-pub struct AtQuery {
-    project: Option<String>,
-    commit: String,
-}
-
-/// `GET /api/board/at` - reconstruct the board as of a commit (the rewind feature).
-pub async fn board_at(State(state): State<AppState>, Query(q): Query<AtQuery>) -> ApiResult {
-    let store = store_for(&state, q.project)?;
-    let root = store.root();
-    let board_src = git::file_at_commit(root, &q.commit, ".wipe/board.json")?
-        .ok_or_else(|| ApiError(anyhow::anyhow!("no board at commit {}", q.commit)))?;
-    let board: Board = serde_json::from_str(&board_src)?;
-
-    let mut lists = Vec::with_capacity(board.lists.len());
-    for list in &board.lists {
-        let mut tickets = Vec::with_capacity(list.cards.len());
-        for id in &list.cards {
-            let rel = format!(".wipe/tickets/{id}.json");
-            if let Some(src) = git::file_at_commit(root, &q.commit, &rel)? {
-                if let Ok(t) = serde_json::from_str::<Ticket>(&src) {
-                    tickets.push(t);
-                }
-            }
-        }
-        lists.push(json!({ "list": list.id, "name": list.name, "tickets": tickets }));
-    }
-    Ok(Json(
-        json!({ "board": board.name, "commit": q.commit, "lists": lists }),
-    ))
 }
 
 // --- write endpoints -------------------------------------------------------
@@ -1267,13 +1227,6 @@ async fn serve_file(
         Ok(res) => res.map(axum::body::Body::new),
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
-}
-
-/// `GET /api/graph` - the commit graph (all branches) with board checkpoints.
-pub async fn graph(State(state): State<AppState>, Query(q): Query<ProjectQuery>) -> ApiResult {
-    let store = store_for(&state, q.project)?;
-    let commits = git::graph(store.root(), Some(300))?;
-    Ok(Json(json!({ "commits": commits })))
 }
 
 /// Body for adding a list.

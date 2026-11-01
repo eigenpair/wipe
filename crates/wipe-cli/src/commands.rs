@@ -93,6 +93,23 @@ pub fn init(out: &Out, args: InitArgs) -> Result<()> {
     );
     store.save_settings(&settings)?;
 
+    // In a git repo the board starts on the wipe branch (published by the first
+    // `wipe commit`), and `.wipe/` is ignored on the code branches.
+    let on_branch = match wipe_core::sync::adopt_new_board(
+        &store,
+        &identity::resolve_opt(None).unwrap_or_else(|| ops::resolve_identity(Some(&store), None)),
+    ) {
+        Ok(m) => m.is_some(),
+        Err(e) => {
+            if !out.json {
+                out.line(format!(
+                    "  (board not put on the wipe branch: {e} - `wipe migrate` retries)"
+                ));
+            }
+            false
+        }
+    };
+
     // Record this board in the registry so `wipe serve` from anywhere lists it.
     registry::register(store.root());
 
@@ -131,16 +148,28 @@ pub fn init(out: &Out, args: InitArgs) -> Result<()> {
             "port": plan.port,
             "autoserve": plan.autoserve,
             "skill": skill_path,
+            "wipe_branch": on_branch,
         }),
     );
     if !out.json {
         if let Some(p) = &skill_path {
             println!("  installed agent skill at {p}");
         }
+        if on_branch {
+            println!(
+                "  the board lives on the `{}` branch; .wipe/ is its working copy (ignored on code branches)",
+                wipe_core::sync::BRANCH
+            );
+        }
         println!("\n  next steps:");
         println!("    wipe identity use <you> --human  choose who your CLI writes are by");
         println!("    wipe serve                      open the board UI");
         println!("    wipe ticket create \"...\" --list todo   add your first card");
+        if on_branch {
+            println!(
+                "    wipe commit -m \"...\"            record board changes (and publish them)"
+            );
+        }
         if plan.skill.is_none() {
             println!("    wipe skill install              teach coding agents to drive this board");
         }
@@ -393,6 +422,8 @@ pub fn status(out: &Out, a: StatusArgs) -> Result<()> {
         .as_deref()
         .map(|w| crate::aware::catch_up_lines(&s, w))
         .unwrap_or_default();
+    // Uncommitted and incoming board changes (the wipe branch).
+    let sync = crate::sync_cmd::overview(&s);
 
     if out.json {
         if a.full {
@@ -405,6 +436,9 @@ pub fn status(out: &Out, a: StatusArgs) -> Result<()> {
             let mut v = json!({ "board": board.name, "lists": lists });
             if !updates.is_empty() {
                 v["updates"] = json!(updates);
+            }
+            if let Some((_, sv)) = &sync {
+                v["sync"] = sv.clone();
             }
             out.json_value(&v);
             return Ok(());
@@ -441,6 +475,9 @@ pub fn status(out: &Out, a: StatusArgs) -> Result<()> {
         }
         if !updates.is_empty() {
             v["updates"] = json!(updates);
+        }
+        if let Some((_, sv)) = &sync {
+            v["sync"] = sv.clone();
         }
         out.json_value(&v);
         return Ok(());
@@ -483,6 +520,14 @@ pub fn status(out: &Out, a: StatusArgs) -> Result<()> {
             println!("  - {u}");
         }
         println!();
+    }
+    if let Some((lines, _)) = &sync {
+        for l in lines {
+            println!("{}", l);
+        }
+        if !lines.is_empty() {
+            println!();
+        }
     }
     match (&who, unread) {
         (Some(w), Some(n)) if n > 0 => println!(
@@ -1735,7 +1780,6 @@ pub fn config(out: &Out, global: bool, cmd: ConfigCmd) -> Result<()> {
                 println!("daemon.expose       {}", settings.daemon.expose.slug());
                 println!("daemon.autoserve    {}", settings.daemon.autoserve);
                 println!("daemon.idle_timeout {}", settings.daemon.idle_timeout_secs);
-                println!("board.autocommit    {}", settings.autocommit);
                 let board = s.load_board()?;
                 let (review, done, rework) = ops::workflow_lists(&board, &settings);
                 let shown = |set: &Option<String>, eff: Option<String>| match set {
@@ -1764,7 +1808,6 @@ pub fn config(out: &Out, global: bool, cmd: ConfigCmd) -> Result<()> {
                 "daemon.expose" => json!(settings.daemon.expose.slug()),
                 "daemon.autoserve" => json!(settings.daemon.autoserve),
                 "daemon.idle_timeout" => json!(settings.daemon.idle_timeout_secs),
-                "board.autocommit" => json!(settings.autocommit),
                 "board.review_list" | "board.done_list" | "board.rework_list" => {
                     let board = s.load_board()?;
                     let (review, done, rework) = ops::workflow_lists(&board, &settings);
@@ -1827,11 +1870,9 @@ pub fn config(out: &Out, global: bool, cmd: ConfigCmd) -> Result<()> {
                         .context("idle_timeout must be seconds (a number)")?;
                     s.save_settings(&settings)?;
                 }
-                "board.autocommit" => {
-                    let mut settings = s.load_settings()?;
-                    settings.autocommit = parse_bool(&value)?;
-                    s.save_settings(&settings)?;
-                }
+                "board.autocommit" => bail!(
+                    "board.autocommit was removed in 1.0: board changes are recorded on the wipe                      branch only by an explicit `wipe commit`"
+                ),
                 "board.name" => {
                     let mut b = s.load_board()?;
                     b.name = value.clone();
@@ -1852,7 +1893,7 @@ pub fn config(out: &Out, global: bool, cmd: ConfigCmd) -> Result<()> {
 }
 
 /// The keys `wipe config get/set` understands for a board.
-const PROJECT_KEYS: &str = "board.name, board.autocommit, board.review_list, board.done_list, \
+const PROJECT_KEYS: &str = "board.name, board.review_list, board.done_list, \
 board.rework_list, daemon.port, daemon.expose, daemon.autoserve, daemon.idle_timeout";
 
 /// `wipe config --global ...` - the machine-wide user defaults.
@@ -2405,34 +2446,6 @@ pub fn trash(out: &Out, cmd: TrashCmd) -> Result<()> {
     Ok(())
 }
 
-/// `wipe commit` - stage and commit the board's `.wipe/` changes as one atomic,
-/// wipe-attributed git commit (optionally scoped to a single ticket).
-pub fn commit(out: &Out, a: CommitArgs) -> Result<()> {
-    let s = store()?;
-    if !wipe_core::git::is_repo(s.root()) {
-        bail!("not a git repository - `wipe commit` needs the board to live inside a git repo");
-    }
-    let who = identity::resolve(a.author)?;
-    let hash = ops::commit_board(&s, a.target.as_deref(), a.message.as_deref(), &who)?;
-    // Someone who has committed the board once knows the move; retire the hint.
-    let mut g = GlobalConfig::load();
-    if g.commit_hint_seen != Some(true) {
-        g.commit_hint_seen = Some(true);
-        let _ = g.save();
-    }
-    match hash {
-        Some(h) => out.ok(
-            format!("committed {h} as {who}"),
-            json!({ "ok": true, "commit": h, "author": who }),
-        ),
-        None => out.ok(
-            "nothing to commit - the board is already up to date",
-            json!({ "ok": true, "commit": Value::Null, "author": who }),
-        ),
-    }
-    Ok(())
-}
-
 /// Whether this process was launched through the npm package's node shim
 /// (marked by the patched shim; see `scripts/patch-npm-installer.mjs`).
 pub(crate) fn via_npm_shim() -> bool {
@@ -2451,16 +2464,9 @@ pub fn doctor(out: &Out) -> Result<()> {
         Some(s) => (Some(s.load_board()?.name), s.ticket_ids()?.len()),
         None => (None, 0),
     };
-    let autocommit = in_board
+    let sync = in_board
         .as_ref()
-        .and_then(|s| s.load_settings().ok())
-        .map(|st| st.autocommit)
-        .unwrap_or(false);
-    let uncommitted = in_board
-        .as_ref()
-        .filter(|s| wipe_core::git::is_repo(s.root()))
-        .map(board_uncommitted)
-        .unwrap_or(0);
+        .and_then(|s| wipe_core::sync::status(s).ok());
     let exe = std::env::current_exe()
         .ok()
         .map(|p| clean_path(&p))
@@ -2482,11 +2488,30 @@ pub fn doctor(out: &Out) -> Result<()> {
              directly: {exe}"
         ));
     }
-    if uncommitted > 0 && !autocommit {
-        warnings.push(format!(
-            "{uncommitted} board file(s) changed but not committed - `wipe commit` records them \
-             as one wipe-attributed commit (or `wipe config set board.autocommit true`)"
-        ));
+    if let Some(st) = &sync {
+        match st.mode {
+            wipe_core::sync::Mode::Unmigrated => warnings.push(
+                "the board isn't on the wipe branch yet - `wipe migrate` moves it there once"
+                    .into(),
+            ),
+            wipe_core::sync::Mode::Tracked => warnings.push(format!(
+                "this checkout still tracks {}/ - `wipe migrate` untracks it here",
+                st.board_dir
+            )),
+            _ => {}
+        }
+        if !st.local.is_empty() {
+            warnings.push(format!(
+                "{} uncommitted board change(s) - `wipe commit -m \"...\"` records them on the wipe branch",
+                st.local.len()
+            ));
+        }
+        if !st.incoming.is_empty() {
+            warnings.push(format!(
+                "{} incoming board change(s) - `wipe sync` applies them",
+                st.incoming.len()
+            ));
+        }
     }
 
     if out.json {
@@ -2501,8 +2526,13 @@ pub fn doctor(out: &Out) -> Result<()> {
             "session_detected": session,
             "npm_shim": via_npm_shim(),
             "binary": exe,
-            "autocommit": autocommit,
-            "uncommitted_board_files": uncommitted,
+            "sync": sync.as_ref().map(|st| json!({
+                "mode": st.mode,
+                "remote": st.remote,
+                "uncommitted": st.local.len(),
+                "incoming": st.incoming.len(),
+                "unpublished": st.unpublished,
+            })),
             "warnings": warnings,
             "version": env!("CARGO_PKG_VERSION"),
         }));
@@ -2539,12 +2569,6 @@ pub fn doctor(out: &Out) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// How many files under `.wipe/` differ from the last commit (0 when clean or
-/// not in git).
-fn board_uncommitted(s: &Store) -> usize {
-    wipe_core::git::changed_count(s.root(), ".wipe").unwrap_or(0)
 }
 
 /// `wipe skill [show|install|path]`

@@ -5,7 +5,7 @@
   import TrashZone from './TrashZone.svelte';
   import {
     board,
-    rewinding,
+    readOnly as rewinding,
     moveTicket,
     deleteTicket,
     createList,

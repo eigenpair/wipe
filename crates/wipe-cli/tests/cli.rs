@@ -264,51 +264,85 @@ fn comments_and_authorship_corrections_are_audited() {
 }
 
 #[test]
-fn git_commits_are_scoped_attributed_and_linked() {
+fn board_commits_go_to_the_wipe_branch_and_tickets_link_code_commits() {
     let p = Project::with_board("Git");
     p.git_init();
-    // Until the first `wipe commit`, writes hint at it - on stderr only.
+    let stderr = |args: &[&str]| {
+        let out = p.cmd(args).output().unwrap();
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+    let git_out = |args: &[&str]| {
+        let o = StdCommand::new("git")
+            .current_dir(p.path())
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
+    };
+
+    // A board that isn't on the wipe branch yet is told how to move it.
+    assert!(stderr(&["ticket", "create", "Login", "--list", "todo"]).contains("wipe migrate"));
+    assert_eq!(p.json(&["doctor"])["sync"]["mode"], "unmigrated");
+    assert!(!p.cmd(&["commit"]).output().unwrap().status.success());
+    let m = p.json(&["migrate"]);
+    assert_eq!(m["ok"], true);
+    assert_eq!(
+        git_out(&["ls-files", ".wipe"]),
+        "",
+        "not tracked on the code branch"
+    );
+
+    // Uncommitted board changes are appended to every command, on stderr only.
     let out = p
-        .cmd(&["ticket", "create", "Login", "--list", "todo", "--json"])
+        .cmd(&["ticket", "create", "Signup", "--list", "todo", "--json"])
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&out.stderr).contains("wipe commit"));
     let _: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("not committed") && err.contains("wipe commit"),
+        "{err}"
+    );
     let d = p.json(&["doctor"]);
-    assert!(d["uncommitted_board_files"].as_u64().unwrap() > 0);
-    assert!(d["warnings"]
+    assert_eq!(d["sync"]["mode"], "branch");
+    assert!(d["sync"]["uncommitted"].as_u64().unwrap() > 0);
+    assert!(p.json(&["status"])["sync"]["uncommitted"].as_u64().unwrap() > 0);
+
+    // `wipe commit` writes only the wipe branch, as the wipe identity.
+    std::fs::write(p.path().join("unrelated.txt"), "hi\n").unwrap();
+    let c = p.json(&["commit", "-m", "plan signup", "--author", "claude-dev"]);
+    assert!(c["commit"].is_string());
+    assert_eq!(c["branch"], "wipe");
+    assert!(c["changes"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|w| w.as_str().unwrap().contains("wipe commit")));
-
-    // `wipe commit` takes only .wipe/, as the wipe identity, not the repo user.
-    std::fs::write(p.path().join("unrelated.txt"), "hi\n").unwrap();
-    let c = p.json(&["commit", "-m", "board init", "--author", "claude-dev"]);
-    assert!(c["commit"].is_string());
-    assert_eq!(p.head_author(), "claude-dev <claude-dev@wipe.local>");
-    let st = StdCommand::new("git")
-        .current_dir(p.path())
-        .args(["status", "--porcelain", "unrelated.txt"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8(st.stdout)
-        .unwrap()
-        .contains("?? unrelated.txt"));
+        .any(|x| x["id"] == "T-002"));
+    assert_eq!(
+        git_out(&["log", "-1", "--format=%an <%ae> %s", "wipe"]),
+        "claude-dev <claude-dev@wipe.local> plan signup"
+    );
+    assert!(git_out(&["status", "--porcelain", "unrelated.txt"]).contains("?? unrelated.txt"));
     assert!(
         p.json(&["commit"])["commit"].is_null(),
         "nothing left to commit"
     );
-    let out = p
-        .cmd(&["ticket", "create", "B", "--list", "todo", "--json"])
-        .output()
-        .unwrap();
-    assert!(
-        !String::from_utf8_lossy(&out.stderr).contains("wipe commit"),
-        "hint retired"
+    assert!(!stderr(&["ticket", "list"]).contains("not committed"));
+    let st = p.json(&["sync", "--check"]);
+    assert_eq!(
+        (st["mode"].as_str(), st["local"].as_array().unwrap().len()),
+        (Some("branch"), 0)
     );
 
-    // `ticket show` links commits that name the ticket (standalone ids only).
+    // No automatic commits: the old setting is refused.
+    assert!(!p
+        .cmd(&["config", "set", "board.autocommit", "true"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    // `ticket show` links code commits that name the ticket (standalone ids only).
     for (f, msg) in [
         ("a", "fix login redirect (T-001)"),
         ("b", "unrelated T-0011 work"),
@@ -330,18 +364,6 @@ fn git_commits_are_scoped_attributed_and_linked() {
         .json(&["ticket", "show", "T-001", "--no-commits"])
         .get("commits")
         .is_none());
-
-    // Autocommit: every write commits .wipe/ by itself.
-    p.run(&["config", "set", "board.autocommit", "true"]);
-    p.json(&["ticket", "create", "X", "--list", "todo"]);
-    let files = StdCommand::new("git")
-        .current_dir(p.path())
-        .args(["--no-pager", "show", "--name-only", "--format=", "HEAD"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8(files.stdout)
-        .unwrap()
-        .contains("tickets/T-003.json"));
 
     // Through the npm shim on Windows, doctor explains the argument truncation.
     let mut c = p.cmd(&["doctor", "--json"]);

@@ -21,6 +21,7 @@ pub mod ops;
 pub mod registry;
 pub mod search;
 pub mod store;
+pub mod sync;
 pub mod translate;
 pub mod trash;
 pub mod vcs;

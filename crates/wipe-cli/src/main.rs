@@ -6,6 +6,7 @@ mod args;
 mod autostart;
 mod aware;
 mod commands;
+mod devlink;
 mod first_run;
 mod forum_cmd;
 mod identity;
@@ -16,6 +17,7 @@ mod output;
 mod safe;
 mod show;
 mod skills;
+mod sync_cmd;
 mod tray;
 mod update;
 mod update_check;
@@ -58,6 +60,10 @@ fn install_panic_hook() {
 
 fn main() -> ExitCode {
     install_panic_hook();
+    // A directory pinned to a development build runs that build instead.
+    if let Some(code) = devlink::delegate() {
+        return code;
+    }
     let mut cli = Cli::parse();
 
     // Honor `-C/--cwd` by switching directories before anything touches the board.
@@ -132,7 +138,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let is_commit = matches!(cli.command, Command::Commit(_));
+    let sync_lines = aware::sync_lines(&cli.command);
     let aware_mode = aware::mode(&cli.command);
     let finish = aware::finish(&cli.command);
     let actor = actor_override(&cli.command).map(str::to_string);
@@ -143,22 +149,26 @@ fn main() -> ExitCode {
 
     match result {
         Ok(()) => {
-            if write && !is_commit {
-                after_write(&out);
-            }
             report_updates(finish);
+            // Uncommitted / incoming board changes, so they're never forgotten.
+            if sync_lines {
+                sync_cmd::after_command();
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            emit_error(cli.json, &format!("{e:#}"));
+            match e.downcast_ref::<sync_cmd::Conflicts>() {
+                Some(c) if cli.json => out.json_value(&sync_cmd::conflicts_json(c)),
+                _ => emit_error(cli.json, &format!("{e:#}")),
+            }
             report_updates(aware::Finish::No);
             ExitCode::FAILURE
         }
     }
 }
 
-/// Whether a command writes to the board (and so needs an identity, takes the
-/// write lock, and is eligible for `board.autocommit`). Reads - including
+/// Whether a command writes to the board (and so needs an identity and takes the
+/// write lock). Reads - including
 /// identity-scoped ones like `inbox` - are never gated.
 fn is_write(c: &Command) -> bool {
     use args::*;
@@ -179,7 +189,12 @@ fn is_write(c: &Command) -> bool {
                 | ForumCmd::Pin { .. }
                 | ForumCmd::Unpin { .. }
         ),
-        Command::Subscribe(_) | Command::Unsubscribe(_) | Command::Commit(_) => true,
+        Command::Subscribe(_)
+        | Command::Unsubscribe(_)
+        | Command::Commit(_)
+        | Command::Sync(args::SyncArgs { check: false, .. })
+        | Command::Restore(_)
+        | Command::Migrate(_) => true,
         Command::Trash { cmd } => !matches!(cmd, TrashCmd::List),
         Command::Config { global, cmd } => !global && matches!(cmd, ConfigCmd::Set { .. }),
         _ => false,
@@ -198,38 +213,6 @@ fn actor_override(c: &Command) -> Option<&str> {
         Command::Subscribe(a) | Command::Unsubscribe(a) => a.author.as_deref(),
         Command::Commit(a) => a.author.as_deref(),
         _ => None,
-    }
-}
-
-/// After a successful write: auto-commit `.wipe/` if the board opts in; else -
-/// until `wipe commit` has been used once on this machine - a one-line stderr
-/// hint that the board changed and how to record it. Best-effort; stdout (and so
-/// the `--json` contract) is never touched.
-fn after_write(out: &Out) {
-    let Ok(s) = wipe_core::Store::discover(".") else {
-        return;
-    };
-    let Ok(settings) = s.load_settings() else {
-        return;
-    };
-    if !wipe_core::git::is_repo(s.root()) {
-        return;
-    }
-    if settings.autocommit {
-        let Some(who) = identity::resolve_opt(None) else {
-            return;
-        };
-        if let Ok(Some(h)) = wipe_core::ops::commit_board(&s, None, None, &who) {
-            if !out.json {
-                eprintln!("  auto-committed {h}");
-            }
-        }
-    } else if wipe_core::GlobalConfig::load().commit_hint_seen != Some(true) {
-        output::hint(
-            "board changed - `wipe commit` records it as one wipe-attributed commit (and keeps \
-             .wipe/ out of your own commits); `wipe config set board.autocommit true` commits \
-             after every write",
-        );
     }
 }
 
@@ -259,9 +242,14 @@ fn dispatch(out: &Out, command: Command) -> anyhow::Result<()> {
         Command::Search(a) => commands::search(out, a),
         Command::Watch(a) => watch::run(out, a),
         Command::Trash { cmd } => commands::trash(out, cmd),
-        Command::Commit(a) => commands::commit(out, a),
+        Command::Commit(a) => sync_cmd::commit(out, a),
+        Command::Sync(a) => sync_cmd::sync(out, a),
+        Command::Migrate(a) => sync_cmd::migrate(out, a),
+        Command::Log(a) => sync_cmd::log(out, a),
+        Command::Restore(a) => sync_cmd::restore(out, a),
         Command::Doctor => commands::doctor(out),
         Command::Update(a) => update::run(out, a),
+        Command::Dev(c) => devlink::run(out, c),
         Command::Skill { cmd } => commands::skill(out, cmd),
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "wipe", &mut std::io::stdout());

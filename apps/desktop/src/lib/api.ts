@@ -11,13 +11,19 @@ import type {
   ForumPost,
   ForumThread,
   ForumThreadSummary,
-  GraphCommit,
   Health,
   Identity,
   IdentityKind,
   LabelDef,
   List,
   Project,
+  SyncChange,
+  SyncEntity,
+  SyncLogEntry,
+  SyncPreview,
+  SyncResolutions,
+  SyncResult,
+  SyncStatus,
   Ticket,
   TicketPatch,
   TrashListResponse
@@ -213,17 +219,76 @@ export const api = {
     return req(`/api/board/translate-ids${qs({ project })}`, { method: 'POST' });
   },
 
-  async graph(project?: string): Promise<GraphCommit[]> {
-    const r = await req<{ commits: GraphCommit[] }>(`/api/graph${qs({ project })}`);
-    return (r.commits ?? []).map((c) => ({
-      ...c,
-      parents: c.parents ?? [],
-      refs: c.refs ?? []
-    }));
+  /** Where the board stands against the wipe branch (cheap; cached server-side). */
+  syncStatus(project?: string): Promise<SyncStatus> {
+    return req<SyncStatus>(`/api/sync${qs({ project })}`);
   },
 
-  async boardAt(commit: string, project?: string): Promise<Board> {
-    return fillBoard(await req<Board>(`/api/board/at${qs({ commit, project })}`));
+  /** Fetch the remote branch (throttled unless `force`), then report status. */
+  syncFetch(project?: string, force = false): Promise<SyncStatus> {
+    return req<SyncStatus>(`/api/sync/fetch${qs({ project, force: force ? 'true' : undefined })}`, {
+      method: 'POST'
+    });
+  },
+
+  /** The board after applying the incoming changes - nothing is written. */
+  async syncPreview(project: string | undefined, resolutions: SyncResolutions): Promise<SyncPreview> {
+    const p = await req<SyncPreview>(`/api/sync/preview${qs({ project })}`, {
+      method: 'POST',
+      body: JSON.stringify({ resolutions })
+    });
+    return { ...p, board: fillBoard(p.board) };
+  },
+
+  /** Apply the incoming changes as previewed. */
+  syncApply(project: string | undefined, resolutions: SyncResolutions): Promise<SyncResult> {
+    return req<SyncResult>(`/api/sync/apply${qs({ project })}`, {
+      method: 'POST',
+      body: JSON.stringify({ resolutions })
+    });
+  },
+
+  /** Commit the uncommitted changes to the wipe branch and publish them. */
+  syncCommit(
+    project: string | undefined,
+    message: string,
+    resolutions: SyncResolutions,
+    actor?: string
+  ): Promise<SyncResult> {
+    return req<SyncResult>(`/api/sync/commit${qs({ project })}`, {
+      method: 'POST',
+      body: JSON.stringify({ message: message.trim() || null, resolutions, actor })
+    });
+  },
+
+  /** Bring single changes into the board: incoming, or as after a past commit. */
+  syncTake(
+    project: string | undefined,
+    source: 'incoming' | { commit: string },
+    entities: SyncEntity[],
+    resolutions: SyncResolutions
+  ): Promise<SyncResult & { synced?: boolean }> {
+    return req(`/api/sync/take${qs({ project })}`, {
+      method: 'POST',
+      body: JSON.stringify({ source, entities, resolutions })
+    });
+  },
+
+  /** The wipe branch's commits, newest first. */
+  async syncLog(project?: string): Promise<SyncLogEntry[]> {
+    const r = await req<{ commits: SyncLogEntry[] }>(`/api/sync/log${qs({ project })}`);
+    return r.commits ?? [];
+  },
+
+  /** The board right after a commit, and what that commit changed. */
+  async syncAt(project: string | undefined, rev: string): Promise<{ board: Board; changes: SyncChange[] }> {
+    const r = await req<{ board: Board; changes: SyncChange[] }>(`/api/sync/at${qs({ project, rev })}`);
+    return { board: fillBoard(r.board), changes: r.changes ?? [] };
+  },
+
+  /** Move a board from before 1.0 onto the wipe branch. */
+  syncMigrate(project?: string): Promise<SyncResult> {
+    return req<SyncResult>(`/api/sync/migrate${qs({ project })}`, { method: 'POST', body: '{}' });
   },
 
   definitions(project?: string): Promise<Definitions> {

@@ -15,15 +15,17 @@
 `wipe` is a CLI-first, git-native system for collaboration between humans and
 agents - and agents with each other - on a Trello-style board that lives
 inside your git repository. There is no external service, no separate
-database, and no account to create: the board *is* a folder in your repo
-(`.wipe/`), and every change to it is a change you can `diff`, `blame`,
-`branch`, and `merge` like any other file.
+database, and no account to create: the board lives on its own `wipe` branch
+of your repo - the single source of truth everyone syncs with - and `.wipe/`
+in your checkout is its working copy. Every board change is an explicit,
+attributed commit on that branch.
 
 A board holds ordered **lists** (Backlog, Todo, In Progress, Done, …)
 containing **tickets**. All state is stored as flat, deterministically
-formatted JSON designed for clean diffs and low-conflict merges, so two
-people - or two agents - can work on the same board on different branches
-and merge without a fight. Media and attachments are version-controlled
+formatted JSON that merges per field, so two people - or two agents - can
+change the same board at the same time: edits to different fields, new
+comments, moves and checklist ticks all combine on their own, and only a real
+disagreement (the same title set two ways) asks you to pick a side. Media and attachments are version-controlled
 alongside everything else.
 
 Alongside the board is a git-tracked **forum** - threaded discussions where
@@ -41,8 +43,9 @@ across chat logs, PR descriptions, and someone's head. `wipe` gives humans and
 agents a shared, durable, structured place to negotiate and track that work -
 without inventing a new protocol or requiring a hosted service:
 
-- **Git-native.** The board lives in your repository, travels with your code,
-  and inherits git's branching, history, and merge semantics for free.
+- **Git-native, one source of truth.** The board lives in your repository on
+  its own `wipe` branch: no merging board files in code PRs, no ticket-id
+  clashes between feature branches, and its whole history in git.
 - **Agent-first, harness-agnostic.** Agents talk to the board exclusively
   through the `wipe` CLI. Any agent harness that can shell out can use it -
   no SDK, no plugin, no proprietary integration.
@@ -61,6 +64,10 @@ without inventing a new protocol or requiring a hosted service:
 - **A git-tracked forum.** Threaded discussions for decisions, gotchas, and
   conventions - durable, searchable project knowledge that lives in the repo,
   with `wipe forum watch` streaming events an agent can subscribe to.
+- **The wipe branch.** Board edits stay local until `wipe commit` records them
+  (and publishes them); `wipe sync` brings in your team's. Every command tells
+  an agent when it has uncommitted or incoming board changes, and the UI
+  highlights them - with a preview of incoming changes before you apply them.
 - **Flat, diffable JSON storage.** No embedded database - everything under
   `.wipe/` is designed to merge cleanly and read clearly in a diff.
 - **Version-controlled media.** Attachments live in the repo alongside
@@ -180,11 +187,17 @@ wipe inbox --unread            # what others changed on your tickets
 wipe watch T-1 --until         # wait until someone else touches T-1
 ```
 
-Record board changes as their own commit (or `wipe config set board.autocommit true`):
+Board edits stay local until you commit them to the `wipe` branch - an
+explicit step, so the board's history reads as finished pieces of work:
 
 ```sh
-wipe commit
+wipe commit -m "plan the signup flow"   # record + publish your board changes
+wipe sync --check                       # what's uncommitted, what's incoming
+wipe sync                               # apply your team's changes (yours stay on top)
 ```
+
+A board from before 1.0 (tracked with your code) moves onto the branch once,
+with `wipe migrate`; other clones pick it up on their next `wipe` command.
 
 Launch the local desktop UI:
 
@@ -248,8 +261,11 @@ the **Forum** tab.
 
 ## How it works / `.wipe` layout
 
-Everything lives under a single `.wipe/` directory at the root of your
-project - this is the board:
+The board lives on an orphan `wipe` branch that holds nothing but the board
+directory. wipe never checks that branch out: it reads and writes it with git
+plumbing, so your checkout, index and HEAD are untouched. Code branches ignore
+`.wipe/`; in every checkout (and every worktree, which share one) it is the
+board's working copy:
 
 ```
 .wipe/
@@ -264,10 +280,13 @@ project - this is the board:
 └── .cache/              # local derived/cache data, gitignored
 ```
 
-Ticket and board files are written with a deterministic serializer so that
-identical logical changes produce identical byte-for-byte diffs, which keeps
-merges predictable even when multiple agents or branches touch the board
-concurrently.
+Ticket and board files are written with a deterministic serializer, and
+`wipe commit` / `wipe sync` merge them per field against the commit your
+working copy started from: comments and posts are unions, counters take the
+maximum, concurrent body edits merge by line, ticket ids both sides allocated
+are renumbered on your side, and only true conflicts are put to you (`--take
+ours|theirs` or `--resolve <id>=<side>` on the CLI, a pick per conflict in the
+UI).
 
 ## For agents
 
@@ -326,9 +345,8 @@ docs/         Architecture guide and release setup
 
 ## Project status
 
-`wipe` is **pre-1.0 and under active development.** Commands, output formats,
-and the on-disk `.wipe` schema may still change between releases. Feedback
-and contributions are very welcome.
+`wipe` is **1.0**: the wipe branch, the CLI surface and the on-disk `.wipe`
+schema are stable. Feedback and contributions are very welcome.
 
 ## Contributing
 

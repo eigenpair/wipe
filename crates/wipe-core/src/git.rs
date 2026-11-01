@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 /// A single commit's metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct CommitInfo {
     /// Full commit hash.
     pub hash: String,
@@ -59,6 +59,17 @@ pub fn log(root: &Path, pathspec: Option<&str>, limit: Option<usize>) -> Result<
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = run(root, &refs)?;
+    Ok(parse_log(&out))
+}
+
+/// Commits in `range` (e.g. `a..b`), most recent first, capped at `limit`.
+pub fn log_range(root: &Path, range: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+    let format = format!("--format=%H{FS}%h{FS}%an{FS}%ae{FS}%aI{FS}%s{RS}");
+    let n = limit.to_string();
+    let out = run(
+        root,
+        &["--no-pager", "log", &format, "--no-color", "-n", &n, range],
+    )?;
     Ok(parse_log(&out))
 }
 
@@ -178,7 +189,7 @@ pub fn last_change(root: &Path, relpath: &str) -> Result<Option<CommitInfo>> {
 /// Turn an identity string into a git `(name, email)` pair. Accepts the usual
 /// `Name <email>` form; a bare agent id (e.g. `claude-dev`) gets a stable,
 /// synthetic `<id>@wipe.local` address so `git` accepts the attribution.
-fn author_ident(author: &str) -> (String, String) {
+pub(crate) fn author_ident(author: &str) -> (String, String) {
     if let Some(open) = author.rfind('<') {
         if let Some(rel_close) = author[open..].find('>') {
             let name = author[..open].trim();
@@ -205,56 +216,6 @@ fn author_ident(author: &str) -> (String, String) {
         slug
     };
     (author.to_string(), format!("{slug}@wipe.local"))
-}
-
-/// Stage the given `pathspecs` (relative to `root`) and create a commit
-/// containing only those paths, attributed to `author` (both author and
-/// committer). Returns the new commit's short hash, or `None` if there was
-/// nothing to commit under the pathspecs. Other staged changes outside the
-/// pathspecs are left untouched, so `.wipe/` commits stay atomic and isolated.
-pub fn commit_paths(
-    root: &Path,
-    pathspecs: &[&str],
-    message: &str,
-    author: Option<&str>,
-) -> Result<Option<String>> {
-    // Stage (and thereby track any new files) under the requested paths only.
-    let mut add: Vec<&str> = vec!["add", "--"];
-    add.extend_from_slice(pathspecs);
-    run(root, &add)?;
-
-    // Is anything actually staged/changed under these paths?
-    let mut status: Vec<&str> = vec!["status", "--porcelain", "--"];
-    status.extend_from_slice(pathspecs);
-    if run(root, &status)?.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let mut args: Vec<String> = Vec::new();
-    if let Some(a) = author {
-        let (name, email) = author_ident(a);
-        args.push("-c".into());
-        args.push(format!("user.name={name}"));
-        args.push("-c".into());
-        args.push(format!("user.email={email}"));
-        args.push("commit".into());
-        args.push(format!("--author={name} <{email}>"));
-    } else {
-        args.push("commit".into());
-    }
-    args.push("-m".into());
-    args.push(message.to_string());
-    // Limit the commit to the pathspecs so unrelated staged changes are excluded.
-    args.push("--".into());
-    for p in pathspecs {
-        args.push((*p).to_string());
-    }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run(root, &refs)?;
-
-    // Report the freshly-created commit's short hash.
-    let head = run(root, &["rev-parse", "--short", "HEAD"])?;
-    Ok(Some(head.trim().to_string()))
 }
 
 /// Compute the git blob hash of `bytes` (identical to `git hash-object`).
@@ -318,95 +279,7 @@ pub fn config_identity(root: &Path) -> Option<String> {
     }
 }
 
-/// A commit in the repository graph, with parent links and ref decorations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GraphCommit {
-    /// Full commit hash.
-    pub hash: String,
-    /// Abbreviated hash.
-    pub short: String,
-    /// Parent commit hashes (2+ means a merge).
-    pub parents: Vec<String>,
-    /// Ref decorations pointing at this commit (branches, tags, HEAD).
-    pub refs: Vec<String>,
-    /// Author display name.
-    pub author_name: String,
-    /// Author date, ISO-8601.
-    pub date: String,
-    /// Commit subject.
-    pub subject: String,
-    /// Whether this commit changed the board (`.wipe/`) - a board "checkpoint".
-    pub board: bool,
-}
-
-/// The commit graph across all branches (most recent first), with parent links,
-/// ref decorations, and a flag marking commits that touched the board. Intended
-/// for drawing a git-graph view of the board's history.
-pub fn graph(root: &Path, limit: Option<usize>) -> Result<Vec<GraphCommit>> {
-    // Hashes of commits that changed the board, so the UI can mark checkpoints.
-    let board: std::collections::HashSet<String> = run(
-        root,
-        &["--no-pager", "log", "--all", "--format=%H", "--", ".wipe"],
-    )
-    .unwrap_or_default()
-    .lines()
-    .map(|s| s.trim().to_string())
-    .collect();
-
-    let format = format!("--format=%H{FS}%h{FS}%P{FS}%D{FS}%an{FS}%aI{FS}%s{RS}");
-    let mut args: Vec<String> = vec![
-        "--no-pager".into(),
-        "log".into(),
-        "--all".into(),
-        "--date-order".into(),
-        format,
-        "--no-color".into(),
-    ];
-    if let Some(l) = limit {
-        args.push("-n".into());
-        args.push(l.to_string());
-    }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = run(root, &refs)?;
-    Ok(out
-        .split(RS)
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-        .filter_map(|record| {
-            let mut f = record.split(FS);
-            let hash = f.next()?.to_string();
-            let short = f.next()?.to_string();
-            let parents = f
-                .next()?
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-            let refs = f
-                .next()
-                .unwrap_or("")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let author_name = f.next().unwrap_or("").to_string();
-            let date = f.next().unwrap_or("").to_string();
-            let subject = f.next().unwrap_or("").to_string();
-            let board = board.contains(&hash);
-            Some(GraphCommit {
-                hash,
-                short,
-                parents,
-                refs,
-                author_name,
-                date,
-                subject,
-                board,
-            })
-        })
-        .collect())
-}
-
-fn parse_log(out: &str) -> Vec<CommitInfo> {
+pub(crate) fn parse_log(out: &str) -> Vec<CommitInfo> {
     out.split(RS)
         .map(str::trim)
         .filter(|r| !r.is_empty())

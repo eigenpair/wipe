@@ -1,5 +1,97 @@
 # Changelog
 
+## 1.0.0 - 2026-11-01
+
+### The wipe branch: one source of truth for the board
+
+The board no longer travels inside your code branches. It lives on a dedicated
+orphan branch, `wipe`, that holds nothing but board directories - and `.wipe/`
+in each checkout is a working copy of it.
+
+- **Explicit commits.** Board edits stay local until `wipe commit -m "..."`
+  records them as one attributed commit on the wipe branch and publishes it.
+  Nothing commits on its own (`board.autocommit` is gone), so the board's
+  history reads as finished pieces of work. The default message summarizes the
+  changes (`board: T-012 created, T-007 moved Todo → Done`).
+- **`wipe sync`** applies your team's committed changes to your working copy
+  and keeps your uncommitted ones on top; `wipe sync --check` shows both lists.
+  `wipe commit` merges incoming changes first, and a push that loses a race
+  fetches, merges and retries.
+- **Merges per field, not per line.** Different fields of one ticket, new
+  comments and forum posts, moves, reorders and checklist ticks all combine on
+  their own; counters take the maximum and concurrent body edits merge by line.
+  Ticket, thread, comment, checklist and reply ids that both sides allocated
+  are renumbered on your side, references included. Only real disagreements -
+  the same field set two ways, a delete against an edit, a card moved to two
+  lists - stop the merge, listed with an id: settle them with `--take
+  ours|theirs` or `--resolve <id>=ours|theirs`. Nothing is written until then.
+- **Agents are told, every command.** After any wipe command an agent sees
+  `[wipe] 3 board changes not committed (...) - wipe commit -m "..."` and
+  `[wipe] 2 incoming board changes on the wipe branch (...) - wipe sync`.
+  `wipe status --json` and `wipe doctor` carry the same counts. The check is
+  cached, so it costs a command about a millisecond; a stale remote is fetched
+  in the background.
+- **The board UI shows it all.** The top bar offers **See N incoming
+  changes**, which previews the board after applying them - new, moved,
+  edited, commented and checked tickets each highlighted in their own color,
+  with conflicts to pick a side for - and turns into close / **Apply**; and
+  **Commit N changes**, which brings your changes forward with a message field
+  and **Commit & publish**. Your own uncommitted changes are always marked
+  subtly on their cards.
+- **No checkout, no index.** wipe reads and writes the branch with git
+  plumbing; your HEAD, index and working tree are never touched. Worktrees of
+  a repo share one working copy, and a fresh clone checks the board out of the
+  branch on its first `wipe` command.
+- **One change at a time.** Every highlighted change in a preview has its own
+  **Apply** (on the card, bottom right, on hover; and in the change list):
+  take one incoming ticket, list or label and leave the rest incoming. From the
+  CLI: `wipe sync T-004 list:review`. Your own new ticket under the same id
+  makes room (renumbered), and once nothing is left incoming your board moves
+  up to the branch by itself.
+- **History, first class.** The history drawer is the wipe branch as a
+  timeline: your uncommitted changes, incoming commits, *your board is here*,
+  then the past. Opening a commit shows the board right after it with its
+  changes highlighted; apply any of them (or all) to bring tickets, lists or
+  labels back as they were - a revert you then commit like any change. From
+  the CLI: `wipe log [--changes]` and `wipe restore T-003 --from <commit>`.
+  This replaces the read-only rewind and the old all-branches commit graph.
+- **Ids are settled by the branch.** Ids on the wipe branch never change; when
+  both sides allocate the same id, the branch's ticket keeps it and your
+  uncommitted one is renumbered - always, with no option to configure.
+  Tickets and threads also carry a hidden random `uid`, so a merge tells "the
+  same ticket" from "another ticket under the same number" by identity, not by
+  content.
+- **Your uncommitted changes look like drafts**: a dashed outline in the
+  change's color and a dot by the id.
+
+### Moving to 1.0
+
+- Run **`wipe migrate`** once per repo: the branch is seeded from the board as
+  last committed with your code (uncommitted edits stay uncommitted changes),
+  published, and `.wipe/` is untracked and ignored on the current branch in a
+  small commit. Other clones get the board from the branch on their next
+  command. On an older branch that still tracks `.wipe/`, `wipe migrate`
+  untracks it there and merges that branch's board edits in as local changes.
+  The board UI offers the same move as a button.
+- `wipe init` in a git repo puts the new board straight onto the branch.
+- Boards outside git keep working as plain files.
+- `board.autocommit` is removed; `wipe config set board.autocommit` says so.
+
+### Development builds per directory
+
+- **`wipe dev link [DIR] --bin <wipe>`** pins a directory to another wipe
+  binary: every `wipe` run inside it - by you or by an agent, `-C` included -
+  hands the whole command to that binary (optionally with its own config dir,
+  `--config-dir`). `wipe dev unlink` / `wipe dev list` manage the pins, which
+  live in your user config (`links.json`), never in a repo. Contributors get
+  a ready sandbox with `node scripts/sandbox.mjs setup` (see CONTRIBUTING).
+- A fresh clone nested inside another board's directory now gets its own board
+  from its wipe branch instead of the enclosing one.
+- **`WIPE_CEILING_DIRS`** (a path list, like git's `GIT_CEILING_DIRECTORIES`):
+  board discovery never walks above these directories. A pinned directory sets
+  it for its binary, so nothing in a sandbox reaches the board of the project
+  it lives in.
+
 ## 0.4.6 - 2026-10-28
 
 ### `wipe update`

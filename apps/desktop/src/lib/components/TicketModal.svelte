@@ -19,7 +19,7 @@
     definitions,
     identities,
     currentProject,
-    rewinding,
+    readOnly as rewinding,
     markSelfChange,
     applyTicket,
     attachFile,

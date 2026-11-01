@@ -121,3 +121,69 @@ impl GlobalConfig {
         Ok(())
     }
 }
+
+/// Directories pinned to a specific wipe binary (`wipe dev link`): a `wipe` run
+/// inside one hands the whole invocation to that binary - how a development
+/// build is tested in a sandbox while the installed wipe serves everything else.
+/// Kept in the user's own config dir (never in a repo), so a cloned project can't
+/// redirect `wipe` to a binary of its choosing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DevLinks {
+    #[serde(default)]
+    pub links: Vec<DevLink>,
+}
+
+/// One pinned directory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DevLink {
+    /// The directory (and everything below it) the pin covers.
+    pub dir: PathBuf,
+    /// The wipe binary that serves it.
+    pub bin: PathBuf,
+    /// A config dir of its own for the pinned binary (`$WIPE_CONFIG_DIR`), so a
+    /// sandbox gets its own board registry, identities and update state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<PathBuf>,
+}
+
+impl DevLinks {
+    /// Path to `links.json`: `$WIPE_LINKS_FILE` (set for a delegated binary, so it
+    /// still edits the real list), else next to `config.json`.
+    pub fn path() -> Option<PathBuf> {
+        if let Ok(f) = std::env::var("WIPE_LINKS_FILE") {
+            if !f.trim().is_empty() {
+                return Some(PathBuf::from(f));
+            }
+        }
+        GlobalConfig::path().map(|p| p.with_file_name("links.json"))
+    }
+
+    pub fn load() -> Self {
+        Self::path()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let Some(path) = Self::path() else {
+            return Ok(());
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut s = serde_json::to_string_pretty(self).unwrap_or_default();
+        s.push('\n');
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, s)?;
+        std::fs::rename(&tmp, &path)
+    }
+
+    /// The pin covering `dir` (already canonical): the deepest one.
+    pub fn find(&self, dir: &std::path::Path) -> Option<&DevLink> {
+        self.links
+            .iter()
+            .filter(|l| dir.starts_with(&l.dir))
+            .max_by_key(|l| l.dir.components().count())
+    }
+}

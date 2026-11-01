@@ -24,6 +24,14 @@
   --wp-error: #bf4d43;
   --wp-shadow: 0 1px 2px rgba(25, 25, 25, 0.06);
   --wp-shadow-lift: 0 10px 30px rgba(25, 25, 25, 0.14);
+  /* Board-sync diff kinds (label palette): new, deleted, moved, edited,
+     talked (comments / posts), checked. */
+  --wp-d-created: #4f8a55;
+  --wp-d-deleted: #bf4d43;
+  --wp-d-moved: #4f8fd6;
+  --wp-d-edited: #d0922c;
+  --wp-d-commented: #8f6a99;
+  --wp-d-checked: #2f8b83;
   color-scheme: light;
 }
 
@@ -45,6 +53,12 @@
   --wp-error: #bf4d43;
   --wp-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   --wp-shadow-lift: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --wp-d-created: #7eae78;
+  --wp-d-deleted: #d4675c;
+  --wp-d-moved: #6eb2f5;
+  --wp-d-edited: #e6b056;
+  --wp-d-commented: #b394bb;
+  --wp-d-checked: #4fb3a9;
   color-scheme: dark;
 }
 

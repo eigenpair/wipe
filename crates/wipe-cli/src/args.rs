@@ -105,8 +105,20 @@ pub enum Command {
         #[command(subcommand)]
         cmd: TrashCmd,
     },
-    /// Commit the board's `.wipe/` changes as one atomic, wipe-attributed commit.
+    /// Commit your board changes to the wipe branch (the board's source of
+    /// truth) and publish them; incoming changes are merged first.
     Commit(CommitArgs),
+    /// Apply incoming board changes from the wipe branch, keeping yours on top
+    /// (`--check`: just show uncommitted and incoming changes).
+    Sync(SyncArgs),
+    /// The wipe branch's history: incoming commits, where your board is, the past.
+    Log(LogArgs),
+    /// Bring tickets, lists, labels... back as they were after a past commit
+    /// (they show as uncommitted changes until you commit).
+    Restore(RestoreArgs),
+    /// Move a board from before 1.0 onto the wipe branch (once per repo), or
+    /// untrack `.wipe/` on an older checked-out branch.
+    Migrate(MigrateArgs),
     /// Manage who your actions are attributed to (humans and agents).
     #[command(subcommand)]
     Identity(IdentityCmd),
@@ -127,6 +139,9 @@ pub enum Command {
     Doctor,
     /// Update wipe through the channel it was installed with (npm, installer, cargo).
     Update(UpdateArgs),
+    /// Pin a directory to a development build of wipe (for testing in a sandbox).
+    #[command(subcommand)]
+    Dev(DevCmd),
     /// Start the local web UI daemon.
     Serve(ServeArgs),
     /// Run the board server as a tray / menu-bar app (Windows, macOS).
@@ -277,18 +292,112 @@ pub struct InboxArgs {
     pub all: bool,
 }
 
+/// How to settle merge conflicts (`wipe commit`, `wipe sync`, `wipe migrate`).
+#[derive(Debug, Args, Default)]
+pub struct ResolveArgs {
+    /// Settle every conflict by keeping one side: `ours` (your working copy)
+    /// or `theirs` (the wipe branch).
+    #[arg(long, value_name = "SIDE")]
+    pub take: Option<String>,
+    /// Settle one conflict: `<conflict-id>=ours|theirs`, with the id printed
+    /// next to the conflict (repeatable).
+    #[arg(long, value_name = "ID=SIDE")]
+    pub resolve: Vec<String>,
+}
+
+/// `wipe dev ...`
+#[derive(Debug, Subcommand)]
+pub enum DevCmd {
+    /// Make every `wipe` run inside DIR (default: here) use another wipe binary.
+    Link {
+        /// The directory to pin (it and everything below it).
+        dir: Option<std::path::PathBuf>,
+        /// The wipe binary to run there (default: this one).
+        #[arg(long)]
+        bin: Option<std::path::PathBuf>,
+        /// Give that binary its own config dir (board registry, identities,
+        /// update state), isolated from yours.
+        #[arg(long)]
+        config_dir: Option<std::path::PathBuf>,
+    },
+    /// Remove the pin covering DIR (default: here).
+    Unlink { dir: Option<std::path::PathBuf> },
+    /// Show the pinned directories.
+    #[command(visible_alias = "status")]
+    List,
+}
+
 /// `wipe commit`
 #[derive(Debug, Args)]
 pub struct CommitArgs {
     /// What to commit: a ticket id (e.g. `T-3`) to commit just that ticket's
-    /// file, or omit to commit all of `.wipe/`.
+    /// file, or omit to commit every board change.
     pub target: Option<String>,
-    /// Commit message (a sensible default is used if omitted).
+    /// Commit message: what changed and why (a summary of the changes is
+    /// used if omitted).
     #[arg(long, short)]
     pub message: Option<String>,
     /// Attribute the commit to this identity instead of the resolved one.
     #[arg(long)]
     pub author: Option<String>,
+    #[command(flatten)]
+    pub resolve: ResolveArgs,
+}
+
+/// `wipe sync`
+#[derive(Debug, Args)]
+pub struct SyncArgs {
+    /// Apply just these incoming changes, leaving the rest incoming: ticket
+    /// (`T-004`) or thread (`F-2`) ids, `list:<id>`, `label:<name>`,
+    /// `board:<part>` (name, description, priorities, lists, identities...).
+    pub targets: Vec<String>,
+    /// Only show where the board stands (uncommitted and incoming changes);
+    /// change nothing.
+    #[arg(long)]
+    pub check: bool,
+    /// Use what was fetched last instead of fetching the remote first.
+    #[arg(long)]
+    pub no_fetch: bool,
+    #[command(flatten)]
+    pub resolve: ResolveArgs,
+}
+
+/// `wipe restore`
+#[derive(Debug, Args)]
+pub struct RestoreArgs {
+    /// What to bring back, as for `wipe sync`: `T-003`, `F-2`, `list:<id>`,
+    /// `label:<name>`, `board:<part>`.
+    #[arg(required = true)]
+    pub targets: Vec<String>,
+    /// The commit on the wipe branch to take them from, as they were right
+    /// after it (see `wipe log`).
+    #[arg(long)]
+    pub from: String,
+}
+
+/// `wipe log`
+#[derive(Debug, Args)]
+pub struct LogArgs {
+    /// How many commits to show.
+    #[arg(short = 'n', long, default_value_t = 20)]
+    pub limit: usize,
+    /// Also list what each commit changed.
+    #[arg(long)]
+    pub changes: bool,
+}
+
+/// `wipe migrate`
+#[derive(Debug, Args)]
+pub struct MigrateArgs {
+    /// Don't publish the new wipe branch to the remote yet.
+    #[arg(long)]
+    pub no_push: bool,
+    /// Leave untracking `.wipe/` staged on the code branch instead of
+    /// committing it.
+    #[arg(long)]
+    pub no_code_commit: bool,
+    #[command(flatten)]
+    pub resolve: ResolveArgs,
 }
 
 /// `wipe init`
@@ -1196,7 +1305,7 @@ pub enum ConfigCmd {
     /// Show all settings.
     Show,
     /// Get a setting by key (daemon.port, daemon.expose, board.name,
-    /// board.autocommit, board.review_list, board.done_list, board.rework_list).
+    /// board.review_list, board.done_list, board.rework_list).
     Get {
         /// Setting key.
         key: String,

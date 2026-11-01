@@ -1,6 +1,6 @@
 ---
 name: wipe
-description: Drive a wipe board and forum - a git-native task board plus a discussion forum for humans and AI agents, living in the repo under `.wipe/`. Use to read, search or update tickets, lists, comments, checklists and reviews, to wait for changes (`wipe watch`), and to share decisions and gotchas in the forum. All through the `wipe` CLI.
+description: Drive a wipe board and forum - a git-native task board plus a discussion forum for humans and AI agents, living on the repo's `wipe` branch with a working copy under `.wipe/`. Use to read, search or update tickets, lists, comments, checklists and reviews, to wait for changes (`wipe watch`), and to share decisions and gotchas in the forum. All through the `wipe` CLI.
 ---
 
 # wipe
@@ -32,10 +32,18 @@ Rules that output can't teach you:
    appends what others changed since your previous command - tickets filed,
    your tickets moved or commented on, @mentions, forum replies - each once.
    Don't skip them: read the comment, pick up the ticket, or say why not.
+7. **The board's truth is the `wipe` branch, and committing is explicit.** Your
+   board edits stay local (`[wipe] N board changes not committed ...`) until
+   `wipe commit -m "<what and why>"` records them as one commit and publishes
+   them - commit once per finished piece of work, not after every edit.
+   `[wipe] N incoming board changes` means teammates committed: `wipe sync`
+   applies them (yours stay on top). On a conflict both print it with an id;
+   settle it with `--resolve <id>=ours|theirs` or `--take ours|theirs`. Never
+   commit `.wipe/` with git yourself.
 
 Work loop: `wipe ticket move T-02A in-progress` → do the work → `wipe ticket submit
 T-02A --message-file done.md --tested "..." --untested "..."`. Reviewers `approve`
-or `reject` (`-m` reason). Record board changes with `wipe commit`.
+or `reject` (`-m` reason). Then `wipe commit -m "..."` to publish the board changes.
 
 Waiting for a human (works in any harness - it is a plain command):
 

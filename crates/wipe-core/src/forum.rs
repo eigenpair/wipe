@@ -94,6 +94,7 @@ pub fn create_thread(
     let thread = Thread {
         version: FORMAT_VERSION,
         id: id.clone(),
+        uid: Some(crate::id::uid()),
         title: spec.title,
         root,
         created: now,
