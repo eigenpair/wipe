@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 - 2026-11-03
+
+- **wipe moved to [eigenpair/wipe](https://github.com/eigenpair/wipe).** Repository links,
+  the release downloads `wipe update` uses, the crate metadata and the "please
+  report it" link now point there; the old `mflRevan/wipe` addresses redirect,
+  so every earlier version keeps installing. The npm package is still
+  `@mflrevan/wipe`.
+- The release, npm-publish and website workflows run from the new home.
+
 ## 1.0.0 - 2026-11-01
 
 ### The wipe branch: one source of truth for the board

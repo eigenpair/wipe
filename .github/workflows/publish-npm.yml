@@ -5,7 +5,7 @@
 # It builds the npm installer package itself with `dist` (self-contained; no
 # dependency on the release job's timing) and publishes it tokenlessly. The
 # package's Trusted Publisher on npmjs.com must point at this workflow
-# (repo mflRevan/wipe, workflow `publish-npm.yml`).
+# (repo eigenpair/wipe, workflow `publish-npm.yml`).
 
 name: Publish npm
 
@@ -23,7 +23,7 @@ jobs:
   publish:
     name: Publish to npm (OIDC)
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'mflRevan' }}
+    if: ${{ github.repository_owner == 'eigenpair' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

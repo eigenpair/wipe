@@ -1,6 +1,6 @@
 # wipe - web
 
-The public marketing + documentation website for [wipe](https://github.com/mflRevan/wipe),
+The public marketing + documentation website for [wipe](https://github.com/eigenpair/wipe),
 a git-native task board for humans and agents.
 
 Built with Vite + React + TypeScript, Tailwind CSS, shadcn/ui-style components,

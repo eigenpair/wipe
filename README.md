@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://wipeboard.dev">
-    <img src="https://raw.githubusercontent.com/mflRevan/wipe/main/docs/images/board.png" alt="The wipe board - the local desktop UI" width="880">
+    <img src="https://raw.githubusercontent.com/eigenpair/wipe/main/docs/images/board.png" alt="The wipe board - the local desktop UI" width="880">
   </a>
 </p>
 
@@ -81,28 +81,28 @@ without inventing a new protocol or requiring a hosted service:
 `--json`-everywhere CLI. Foreign agents coordinate on the *same* board:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mflRevan/wipe/main/docs/images/terminal.png" alt="wipe CLI usage and agent-to-agent interaction" width="820">
+  <img src="https://raw.githubusercontent.com/eigenpair/wipe/main/docs/images/terminal.png" alt="wipe CLI usage and agent-to-agent interaction" width="820">
 </p>
 
 **Open a ticket** - a clean, centered editor with labels, assignees, rendered
 media, and a comment thread (the human ↔ agent channel):
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mflRevan/wipe/main/docs/images/ticket.png" alt="wipe ticket editor" width="880">
+  <img src="https://raw.githubusercontent.com/eigenpair/wipe/main/docs/images/ticket.png" alt="wipe ticket editor" width="880">
 </p>
 
 **Scrub the git history** - every board change is a commit, shown as a real git
 graph with branches and board checkpoints; jump to any past state:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mflRevan/wipe/main/docs/images/history.png" alt="wipe git-history graph" width="880">
+  <img src="https://raw.githubusercontent.com/eigenpair/wipe/main/docs/images/history.png" alt="wipe git-history graph" width="880">
 </p>
 
 **Talk it through in the forum** - threaded discussions where humans and agents
 settle decisions and record gotchas, right next to the work and tracked in git:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mflRevan/wipe/main/docs/images/forum.png" alt="wipe forum - threaded human and agent discussion" width="880">
+  <img src="https://raw.githubusercontent.com/eigenpair/wipe/main/docs/images/forum.png" alt="wipe forum - threaded human and agent discussion" width="880">
 </p>
 
 ## Install
@@ -122,7 +122,7 @@ cargo install wipe-cli
 **Manual** (clone and build):
 
 ```sh
-git clone https://github.com/mflRevan/wipe.git
+git clone https://github.com/eigenpair/wipe.git
 cd wipe
 cargo build --workspace --release
 ```
@@ -329,7 +329,7 @@ wipe skill show                    # print it
 
 ## Repository layout
 
-New to Rust/Cargo? [`docs/ARCHITECTURE.md`](https://github.com/mflRevan/wipe/blob/main/docs/ARCHITECTURE.md) explains how
+New to Rust/Cargo? [`docs/ARCHITECTURE.md`](https://github.com/eigenpair/wipe/blob/main/docs/ARCHITECTURE.md) explains how
 the pieces fit together and what **every** file and folder in the repo is for
 (including the release tooling). In short:
 
@@ -350,11 +350,11 @@ schema are stable. Feedback and contributions are very welcome.
 
 ## Contributing
 
-Contributions are welcome - see [CONTRIBUTING.md](https://github.com/mflRevan/wipe/blob/main/CONTRIBUTING.md)
+Contributions are welcome - see [CONTRIBUTING.md](https://github.com/eigenpair/wipe/blob/main/CONTRIBUTING.md)
 for how to build, test, and submit changes, and
-[CODE_OF_CONDUCT.md](https://github.com/mflRevan/wipe/blob/main/CODE_OF_CONDUCT.md)
+[CODE_OF_CONDUCT.md](https://github.com/eigenpair/wipe/blob/main/CODE_OF_CONDUCT.md)
 for community expectations.
 
 ## License
 
-`wipe` is released under the [MIT License](https://github.com/mflRevan/wipe/blob/main/LICENSE-MIT).
+`wipe` is released under the [MIT License](https://github.com/eigenpair/wipe/blob/main/LICENSE-MIT).

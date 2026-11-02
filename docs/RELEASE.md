@@ -26,7 +26,7 @@ cargo-dist dry-run (`dist plan`), never a publish.
 - **npm needs no secret** - it uses OIDC trusted publishing (below).
 
 **npm OIDC trusted publishing:** on npmjs.com → `@mflrevan/wipe` → Settings →
-**Trusted Publisher**, point it at repo `mflRevan/wipe`, workflow **`publish-npm.yml`**
+**Trusted Publisher**, point it at repo `eigenpair/wipe`, workflow **`publish-npm.yml`**
 (✅ configured). `publish-npm.yml` requests an `id-token` and publishes tokenlessly;
 no `NPM_TOKEN` is required.
 

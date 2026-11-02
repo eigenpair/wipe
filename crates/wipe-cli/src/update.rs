@@ -23,7 +23,7 @@ use crate::output::Out;
 use crate::update_check;
 
 const PKG: &str = "@mflrevan/wipe";
-const RELEASES: &str = "https://github.com/mflRevan/wipe/releases";
+const RELEASES: &str = "https://github.com/eigenpair/wipe/releases";
 const EXE: &str = if cfg!(windows) { "wipe.exe" } else { "wipe" };
 
 /// How this copy of wipe was installed.

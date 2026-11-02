@@ -25,7 +25,7 @@ jobs:
   deploy:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'mflRevan' }}
+    if: ${{ github.repository_owner == 'eigenpair' }}
     defaults:
       run:
         working-directory: apps/web

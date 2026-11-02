@@ -53,7 +53,7 @@ fn install_panic_hook() {
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
             .unwrap_or_default();
         eprintln!(
-            "error: internal error: {msg}{at} - please report it at https://github.com/mflRevan/wipe/issues"
+            "error: internal error: {msg}{at} - please report it at https://github.com/eigenpair/wipe/issues"
         );
     }));
 }

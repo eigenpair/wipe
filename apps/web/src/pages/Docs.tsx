@@ -190,7 +190,7 @@ function Installation() {
                   Clone the repository and build the workspace.
                 </p>
                 <CodeBlock
-                  code={`git clone https://github.com/mflRevan/wipe.git\ncd wipe\ncargo build --workspace --release`}
+                  code={`git clone https://github.com/eigenpair/wipe.git\ncd wipe\ncargo build --workspace --release`}
                   prompt
                 />
               </div>

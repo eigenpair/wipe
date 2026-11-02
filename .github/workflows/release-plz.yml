@@ -19,7 +19,7 @@ jobs:
   crates:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'mflRevan' }}
+    if: ${{ github.repository_owner == 'eigenpair' }}
     permissions:
       contents: read
     steps:
