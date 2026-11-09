@@ -840,19 +840,224 @@ pub fn delete_label(store: &Store, name: &str, now: DateTime<Utc>) -> Result<()>
 }
 
 /// List identities: the saved registry merged with human authors discovered from
-/// the repo's VCS (git, Mercurial, …) so contributors show up without manual setup.
+/// the repo's VCS (git, Mercurial, …) so contributors show up without manual
+/// setup. Ids are unique (see [`normalize_identities`]).
 pub fn list_identities(store: &Store) -> Result<Vec<Identity>> {
     let mut registry = store.load_identities()?;
-    for (name, email) in crate::vcs::authors(store.root()) {
-        if !registry.iter().any(|i| i.id == email) {
+    normalize_identities(&mut registry);
+    // The people in the history, and whoever works here now (before their
+    // first commit), so they can be assigned and mentioned.
+    let mut people = crate::vcs::authors(store.root());
+    if let Some((name, key)) = account(store) {
+        people.push((name, key));
+    }
+    for (name, email) in people {
+        if !registry.iter().any(|i| i.id.eq_ignore_ascii_case(&email)) {
             registry.push(Identity {
                 id: email,
                 display_name: name,
                 kind: IdentityKind::Human,
+                owner: None,
             });
         }
     }
     Ok(registry)
+}
+
+/// The person working in this repository, from its version control: `(name,
+/// key)`, the key being their email (the id of their human identity) or, with
+/// no email configured, their name. Agents act for this account.
+pub fn account(store: &Store) -> Option<(String, String)> {
+    let raw = crate::vcs::identity(store.root())?;
+    Some(split_account(&raw))
+}
+
+/// `Name <email>` -> `(Name, email)`; a bare value is both.
+pub fn split_account(raw: &str) -> (String, String) {
+    match raw.trim().rsplit_once('<') {
+        Some((name, rest)) => {
+            let email = rest.trim_end_matches('>').trim().to_string();
+            let name = name.trim();
+            let name = if name.is_empty() {
+                email.clone()
+            } else {
+                name.to_string()
+            };
+            (name, email)
+        }
+        None => (raw.trim().to_string(), raw.trim().to_string()),
+    }
+}
+
+/// Make identity ids unique, case-insensitively: entries for one id that agree
+/// (same kind and owner) are one identity; a clashing one (e.g. two people's
+/// agents both called `claude`, met in a merge) is renamed with a numbered
+/// suffix - `claude02`. Returns whether anything changed.
+pub fn normalize_identities(list: &mut Vec<Identity>) -> bool {
+    let mut out: Vec<Identity> = Vec::with_capacity(list.len());
+    let mut changed = false;
+    for i in std::mem::take(list) {
+        match out.iter_mut().find(|o| o.id.eq_ignore_ascii_case(&i.id)) {
+            None => out.push(i),
+            Some(o) if o.kind == i.kind && (o.owner == i.owner || i.owner.is_none()) => {
+                changed = true;
+            }
+            Some(o) if o.kind == i.kind && o.owner.is_none() => {
+                o.owner = i.owner;
+                changed = true;
+            }
+            Some(_) => {
+                let mut i = i;
+                i.id = free_id(&out, &i.id);
+                out.push(i);
+                changed = true;
+            }
+        }
+    }
+    *list = out;
+    changed
+}
+
+/// `base` with the first free two-digit suffix: `claude02`, `claude03`, ...
+fn free_id(list: &[Identity], base: &str) -> String {
+    (2..)
+        .map(|n| format!("{base}{n:02}"))
+        .find(|c| !list.iter().any(|i| i.id.eq_ignore_ascii_case(c)))
+        .expect("an unbounded range has a free id")
+}
+
+/// Whether `id` is `base` plus a two-digit suffix (`claude02` of `claude`).
+fn is_variant(id: &str, base: &str) -> bool {
+    id.to_ascii_lowercase()
+        .strip_prefix(&base.to_ascii_lowercase())
+        .is_some_and(|n| n.len() == 2 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// How [`claim_agent`] settled a requested agent id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// An existing identity of this account (or an unowned one, now claimed).
+    Existing,
+    /// A new identity was registered.
+    Created,
+    /// The id belongs to another person's agent: this account's own variant
+    /// (`claude02`) is used instead.
+    Variant,
+}
+
+/// Choose the agent identity `requested` for an agent working for `owner` (the
+/// account key, see [`account`]). Agents always belong to a person: an existing
+/// agent of `owner`'s (or an unowned one, which `owner` claims) is reused as is;
+/// a name another person's agent holds resolves to `owner`'s own numbered
+/// variant (`claude02`), created on first use. A person's identity is never
+/// handed to an agent.
+pub fn claim_agent(
+    store: &Store,
+    requested: &str,
+    display_name: Option<&str>,
+    owner: Option<&str>,
+) -> Result<(Identity, Claim)> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err(Error::msg("an identity id cannot be empty"));
+    }
+    let owner = owner.map(str::trim).filter(|o| !o.is_empty());
+    let display_name = display_name.map(str::trim).filter(|n| !n.is_empty());
+    let mut registry = store.load_identities()?;
+    let mut changed = normalize_identities(&mut registry);
+    let human = registry
+        .iter()
+        .any(|i| i.id.eq_ignore_ascii_case(requested) && i.kind == IdentityKind::Human)
+        || crate::vcs::authors(store.root())
+            .iter()
+            .any(|(_, e)| e.eq_ignore_ascii_case(requested));
+    if human {
+        return Err(Error::msg(format!(
+            "`{requested}` is a person's identity - an agent needs its own (e.g. `claude`)"
+        )));
+    }
+    let mine = |i: &Identity| i.owner.is_none() || owner.is_none() || i.owner.as_deref() == owner;
+    let (ident, claim) = match registry
+        .iter()
+        .position(|i| i.id.eq_ignore_ascii_case(requested))
+    {
+        Some(at) if mine(&registry[at]) => {
+            let i = &mut registry[at];
+            if i.owner.is_none() && owner.is_some() {
+                i.owner = owner.map(str::to_string);
+                changed = true;
+            }
+            if let Some(n) = display_name.filter(|n| *n != i.display_name) {
+                i.display_name = n.to_string();
+                changed = true;
+            }
+            (i.clone(), Claim::Existing)
+        }
+        Some(_) => {
+            // Another person's agent: this account's own variant of the name.
+            match registry.iter().find(|i| {
+                i.kind == IdentityKind::Agent
+                    && i.owner.as_deref() == owner
+                    && is_variant(&i.id, requested)
+            }) {
+                Some(v) => (v.clone(), Claim::Variant),
+                None => {
+                    let ident = Identity {
+                        id: free_id(&registry, requested),
+                        display_name: display_name.unwrap_or(requested).to_string(),
+                        kind: IdentityKind::Agent,
+                        owner: owner.map(str::to_string),
+                    };
+                    registry.push(ident.clone());
+                    changed = true;
+                    (ident, Claim::Variant)
+                }
+            }
+        }
+        None => {
+            let ident = Identity {
+                id: requested.to_string(),
+                display_name: display_name.unwrap_or(requested).to_string(),
+                kind: IdentityKind::Agent,
+                owner: owner.map(str::to_string),
+            };
+            registry.push(ident.clone());
+            changed = true;
+            (ident, Claim::Created)
+        }
+    };
+    if changed {
+        store.save_identities(&registry)?;
+    }
+    Ok((ident, claim))
+}
+
+/// The identity an agent named `requested` acts as for `owner`, without
+/// registering anything: `requested` itself when it is `owner`'s (or unowned,
+/// unknown, or a person), else `owner`'s numbered variant if one exists.
+pub fn agent_for(store: &Store, requested: &str, owner: Option<&str>) -> String {
+    let Ok(mut registry) = store.load_identities() else {
+        return requested.to_string();
+    };
+    normalize_identities(&mut registry);
+    let Some(found) = registry
+        .iter()
+        .find(|i| i.id.eq_ignore_ascii_case(requested))
+    else {
+        return requested.to_string();
+    };
+    if found.kind == IdentityKind::Human
+        || found.owner.is_none()
+        || owner.is_none()
+        || found.owner.as_deref() == owner
+    {
+        return found.id.clone();
+    }
+    registry
+        .iter()
+        .find(|i| i.owner.as_deref() == owner && is_variant(&i.id, requested))
+        .map(|i| i.id.clone())
+        .unwrap_or_else(|| requested.to_string())
 }
 
 /// Resolve the acting identity for an authored action, VCS-agnostic and honoring
@@ -911,6 +1116,7 @@ pub fn upsert_identity(
             id: id.to_string(),
             display_name: display_name.to_string(),
             kind: kind.unwrap_or_default(),
+            owner: None,
         };
         registry.push(ident.clone());
         store.save_identities(&registry)?;
@@ -1292,5 +1498,48 @@ mod tests {
         let b = add_attachment(&s, "T-1", "new.txt", b"hello", "text/plain", "t", now()).unwrap();
         assert_eq!(b.source, AttachmentSource::Media);
         assert!(b.path.starts_with(".wipe/media/") && root.join(&b.path).exists());
+    }
+
+    #[test]
+    fn agents_belong_to_a_person_and_ids_stay_unique() {
+        let (_d, s) = project();
+        let claim = |id: &str, owner: &str| claim_agent(&s, id, None, Some(owner)).unwrap();
+        // First use registers (or claims) the agent for that person.
+        assert_eq!(claim("claude", "ada@x").1, Claim::Created);
+        assert_eq!(
+            claim("Claude", "ada@x").0.id,
+            "claude",
+            "ids are case-insensitive"
+        );
+        // Another person's agent of the same name is their own variant.
+        let (bob, how) = claim("claude", "bob@x");
+        assert_eq!((bob.id.as_str(), how), ("claude02", Claim::Variant));
+        assert_eq!(bob.owner.as_deref(), Some("bob@x"));
+        assert_eq!(claim("claude", "bob@x").0.id, "claude02", "and stays it");
+        assert_eq!(agent_for(&s, "claude", Some("bob@x")), "claude02");
+        assert_eq!(agent_for(&s, "claude", Some("ada@x")), "claude");
+        // An unowned agent (from before 1.1) is claimed by its first user.
+        upsert_identity(&s, "bot", "bot", Some(IdentityKind::Agent)).unwrap();
+        assert_eq!(claim("bot", "bob@x").1, Claim::Existing);
+        assert_eq!(claim("bot", "ada@x").0.id, "bot02");
+        // A person's identity is never an agent's.
+        upsert_identity(&s, "eve@x", "Eve", Some(IdentityKind::Human)).unwrap();
+        assert!(claim_agent(&s, "eve@x", None, Some("bob@x")).is_err());
+
+        // Duplicates met in a merge: agreeing entries fold, clashing ones are renamed.
+        let agent = |id: &str, owner: Option<&str>| Identity {
+            id: id.into(),
+            display_name: id.into(),
+            kind: IdentityKind::Agent,
+            owner: owner.map(str::to_string),
+        };
+        let mut list = vec![
+            agent("claude", Some("ada@x")),
+            agent("claude", None),
+            agent("Claude", Some("bob@x")),
+        ];
+        assert!(normalize_identities(&mut list));
+        let ids: Vec<&str> = list.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "Claude02"]);
     }
 }

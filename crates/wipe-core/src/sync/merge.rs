@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::Files;
-use crate::model::{Board, Definitions, Identity, Post, Settings, Subscriptions, Thread, Ticket};
+use crate::model::{
+    Board, Definitions, ForumEntry, ForumFormat, Identity, Post, Settings, Subscriptions, Thread,
+    Ticket,
+};
 
 /// Which version of a conflicting value to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,7 +208,8 @@ fn serialize(path: &str, v: Value) -> Vec<u8> {
         "identities.json" => typed::<Vec<Identity>>(&v),
         "subscriptions.json" => typed::<Subscriptions>(&v),
         p if p.starts_with("tickets/") => typed::<Ticket>(&v),
-        p if p.starts_with("forum/") => typed::<Thread>(&v),
+        p if p.starts_with("forum/") && v.get("root").is_some() => typed::<Thread>(&v),
+        p if p.starts_with("forum/") => typed::<ForumEntry>(&v),
         _ => None,
     }
     .unwrap_or_else(|| serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -474,6 +478,123 @@ pub(crate) fn renumber_files(
     ours: &mut Files,
     theirs: &Files,
 ) -> Vec<(String, String)> {
+    let mut renamed = rename_identities(base, ours, theirs);
+    renamed.extend(renumber_entities(base, ours, theirs));
+    renamed
+}
+
+/// Identities both sides registered under one id that are different identities
+/// (two people's agents both called `claude`, or a person and an agent): the
+/// incoming one keeps the id, ours yields to the next free numbered one
+/// (`claude02`), and every reference to it in our changed files follows -
+/// authors, assignees, subscriptions, `@claude` mentions.
+fn rename_identities(base: &Files, ours: &mut Files, theirs: &Files) -> Vec<(String, String)> {
+    let list = |f: &Files| -> Vec<Identity> {
+        f.get("identities.json")
+            .and_then(|b| serde_json::from_slice(b).ok())
+            .unwrap_or_default()
+    };
+    let (b, o, t) = (list(base), list(ours), list(theirs));
+    let in_base = |id: &str| b.iter().any(|i| i.id.eq_ignore_ascii_case(id));
+    let mut taken: Vec<String> = b
+        .iter()
+        .chain(&o)
+        .chain(&t)
+        .map(|i| i.id.to_ascii_lowercase())
+        .collect();
+    let mut map: BTreeMap<String, String> = BTreeMap::new();
+    for oi in o.iter().filter(|i| !in_base(&i.id)) {
+        let Some(ti) = t.iter().find(|ti| ti.id.eq_ignore_ascii_case(&oi.id)) else {
+            continue;
+        };
+        let same = ti.kind == oi.kind
+            && (ti.owner == oi.owner || ti.owner.is_none() || oi.owner.is_none());
+        if same {
+            continue;
+        }
+        let new = (2..)
+            .map(|n| format!("{}{n:02}", oi.id))
+            .find(|c| !taken.contains(&c.to_ascii_lowercase()))
+            .expect("an unbounded range has a free id");
+        taken.push(new.to_ascii_lowercase());
+        map.insert(oi.id.clone(), new);
+    }
+    if map.is_empty() {
+        return Vec::new();
+    }
+    let changed: Vec<String> = ours
+        .iter()
+        .filter(|(p, bytes)| p.ends_with(".json") && base.get(*p) != Some(*bytes))
+        .map(|(p, _)| p.clone())
+        .collect();
+    for p in changed {
+        let Some(mut v) = ours
+            .get(&p)
+            .and_then(|b| serde_json::from_slice::<Value>(b).ok())
+        else {
+            continue;
+        };
+        if rename_in(&mut v, &map) {
+            ours.insert(p.clone(), serialize(&p, v));
+        }
+    }
+    map.into_iter().collect()
+}
+
+/// Rename identity ids in a JSON value: whole string values, object keys
+/// (subscriptions), and `@id` mentions inside text.
+fn rename_in(v: &mut Value, map: &BTreeMap<String, String>) -> bool {
+    match v {
+        Value::String(s) => {
+            if let Some(n) = map.get(s.as_str()) {
+                *s = n.clone();
+                return true;
+            }
+            if !s.contains('@') {
+                return false;
+            }
+            let mut out = String::with_capacity(s.len());
+            let mut last = 0;
+            for (range, tag) in crate::refs::scan(s) {
+                if let crate::refs::Tag::Identity(id) = &tag {
+                    if let Some(n) = map.get(id) {
+                        out.push_str(&s[last..range.start]);
+                        out.push('@');
+                        out.push_str(n);
+                        last = range.start + 1 + id.len();
+                    }
+                }
+            }
+            if last == 0 {
+                return false;
+            }
+            out.push_str(&s[last..]);
+            *s = out;
+            true
+        }
+        Value::Array(a) => a.iter_mut().fold(false, |acc, x| rename_in(x, map) | acc),
+        Value::Object(o) => {
+            let keys: Vec<(String, String)> = o
+                .keys()
+                .filter_map(|k| map.get(k).map(|n| (k.clone(), n.clone())))
+                .collect();
+            let mut changed = !keys.is_empty();
+            for (k, n) in keys {
+                if let Some(x) = o.remove(&k) {
+                    o.insert(n, x);
+                }
+            }
+            for x in o.values_mut() {
+                changed |= rename_in(x, map);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+/// Renumber the tickets and posts both sides created under the same id.
+fn renumber_entities(base: &Files, ours: &mut Files, theirs: &Files) -> Vec<(String, String)> {
     let board = |f: &Files| -> Option<Board> { serde_json::from_slice(f.get("board.json")?).ok() };
     let (Some(ob), Some(tb)) = (board(ours), board(theirs)) else {
         return Vec::new();
@@ -529,18 +650,31 @@ pub(crate) fn renumber_files(
     }
     let next_ticket = next;
 
+    // Forum posts (hex) or threads (decimal), by the board's forum format.
+    let posts = tb.forum == ForumFormat::Posts;
     let mut next_thread = ob.next_thread.max(tb.next_thread);
     for p in ours.keys().chain(theirs.keys()) {
         if let Some(n) = p
             .strip_prefix("forum/F-")
             .and_then(|s| s.strip_suffix(".json"))
-            .and_then(|s| s.parse::<u64>().ok())
+            .and_then(|s| {
+                if posts {
+                    u64::from_str_radix(s, 16).ok()
+                } else {
+                    s.parse::<u64>().ok()
+                }
+            })
         {
             next_thread = next_thread.max(n + 1);
         }
     }
     for old in clashes("forum/") {
-        map.insert(old, format!("F-{next_thread}"));
+        let new = if posts {
+            crate::id::hex_post_id(next_thread)
+        } else {
+            format!("F-{next_thread}")
+        };
+        map.insert(old, new);
         next_thread += 1;
     }
     if map.is_empty() {

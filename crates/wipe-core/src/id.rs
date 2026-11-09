@@ -17,6 +17,11 @@ pub fn hex_ticket_id(n: u64) -> String {
     format!("T-{n:03X}")
 }
 
+/// Format a forum post ID from its counter, like ticket ids: `F-001`, `F-2AF`.
+pub fn hex_post_id(n: u64) -> String {
+    format!("F-{n:03X}")
+}
+
 /// The digits of a ticket reference as a person or agent types it: `T-2AF`,
 /// `t2af`, `T 005`, `#T-12` -> `"2AF"`, `"2AF"`, `"005"`, `"12"` (upper-cased).
 /// `None` when it isn't shaped like a ticket id.

@@ -83,15 +83,25 @@ fn multiline_bodies_survive_via_file_and_stdin() {
 
     // Forum post, reply and edit take files too.
     p.json(&["forum", "post", "-t", "Notes", "--body-file", "c.md"]);
-    p.json(&["forum", "reply", "F-1", "--body-file", "b.md"]);
-    p.json(&["forum", "edit", "F-1", "--body-file", "b.md"]);
-    let t = p.json(&["forum", "show", "F-1"]);
+    p.json(&[
+        "forum",
+        "reply",
+        "F-001",
+        "-s",
+        "Same",
+        "--body-file",
+        "b.md",
+    ]);
+    p.json(&["forum", "edit", "F-001", "--body-file", "b.md"]);
+    let t = p.json(&["forum", "show", "F-001"]);
+    let reply = format!("@F-001 {body}");
     assert_eq!(
         (
-            t["post"]["body"].as_str(),
-            t["post"]["replies"][0]["body"].as_str()
+            t["posts"][0]["body"].as_str(),
+            t["posts"][1]["body"].as_str()
         ),
-        (Some(body), Some(body))
+        (Some(body), Some(reply.as_str())),
+        "a reply opens with its parent's tag"
     );
 
     // A missing body source fails with guidance, not an empty comment.
@@ -415,7 +425,7 @@ fn search_ranks_explains_and_filters() {
         "the foam near the shore looks static"
     );
     assert_eq!(v["tickets"][2]["matched"], "comment c-1 by bob");
-    assert_eq!(ids(&v["posts"]), ["F-1"]);
+    assert_eq!(ids(&v["posts"]), ["F-001"]);
     assert_eq!(v["total"], json!({ "tickets": 3, "posts": 1 }));
 
     for (q, want) in [
@@ -741,34 +751,44 @@ fn forum_pin_and_bounded_digest() {
         "-b",
         "Always run flutter clean first.",
     ]);
-    p.json(&["forum", "reply", "F-1", "-b", "And bump the build number."]);
+    p.json(&[
+        "forum",
+        "reply",
+        "F-001",
+        "-s",
+        "Bump the build number",
+        "-b",
+        "And bump the build number.",
+    ]);
     p.json(&["forum", "post", "-t", "Chatter", "-b", "not durable"]);
     assert!(p.run(&["forum", "digest"]).contains("wipe forum pin"));
 
-    p.json(&["forum", "pin", "F-1"]);
-    assert_eq!(p.json(&["forum", "pin", "F-1"])["changed"], false);
-    assert!(p.json_err(&["forum", "pin", "F-1.1"])["error"]
+    p.json(&["forum", "pin", "F-001"]);
+    assert_eq!(p.json(&["forum", "pin", "F-001"])["changed"], false);
+    assert!(p.json_err(&["forum", "pin", "F-002"])["error"]
         .as_str()
         .unwrap()
         .contains("whole threads"));
     let d = p.run(&["forum", "digest"]);
     assert!(
-        d.contains("## F-1 - Build rule")
+        d.contains("## F-001 - Build rule")
             && d.contains("flutter clean")
-            && d.contains("F-1.1")
-            && !d.contains("Chatter")
+            && d.contains("F-002")
+            && d.contains("Bump the build number")
+            && !d.contains("Chatter"),
+        "{d}"
     );
 
     // Size-bounded, however long the pinned threads are.
     p.json(&["forum", "post", "-t", "Huge", "-b", &"word ".repeat(3000)]);
-    p.json(&["forum", "pin", "F-3"]);
+    p.json(&["forum", "pin", "F-004"]);
     let d = p.json(&["forum", "digest", "--max-bytes", "1500"]);
     assert!(d["bytes"].as_u64().unwrap() <= 1500, "{}", d["bytes"]);
     assert!(d["digest"]
         .as_str()
         .unwrap()
-        .contains("wipe forum show F-3"));
-    p.json(&["forum", "unpin", "F-3"]);
+        .contains("wipe forum show F-004"));
+    p.json(&["forum", "unpin", "F-004"]);
     assert!(!p.run(&["forum", "digest"]).contains("Huge"));
 }
 
@@ -887,6 +907,7 @@ fn hex_ids_any_spelling_translation_and_repair() {
     let bj = old.path().join(".wipe/board.json");
     let mut b: Value = serde_json::from_str(&std::fs::read_to_string(&bj).unwrap()).unwrap();
     b.as_object_mut().unwrap().remove("ids");
+    b.as_object_mut().unwrap().remove("forum");
     std::fs::write(&bj, serde_json::to_string_pretty(&b).unwrap()).unwrap();
     for i in 0..12 {
         old.json(&["ticket", "create", &format!("old {i}"), "--list", "todo"]);
@@ -935,7 +956,8 @@ fn hex_ids_any_spelling_translation_and_repair() {
 
     assert_eq!(
         old.json(&["board", "translate-ids", "--yes"])["translated"],
-        12
+        13,
+        "12 tickets and the forum's one post"
     );
     let t = old.json(&["ticket", "show", "T-12"]);
     assert_eq!(
@@ -947,9 +969,11 @@ fn hex_ids_any_spelling_translation_and_repair() {
         old.json(&["comment", "list", "T-3"])["comments"][0]["body"],
         "blocked by T-00C, see T-00A"
     );
+    let post = old.json(&["forum", "show", "F-1"]);
     assert_eq!(
-        old.json(&["forum", "show", "F-1"])["post"]["refs"],
-        json!(["T-00C"])
+        (&post["id"], &post["posts"][0]["refs"]),
+        (&json!("F-001"), &json!(["T-00C"])),
+        "old post ids still resolve"
     );
     assert_eq!(
         old.json(&["ticket", "create", "next", "--list", "todo"])["id"],
@@ -972,7 +996,7 @@ fn hex_ids_any_spelling_translation_and_repair() {
         "only once"
     );
     assert_eq!(
-        old.json(&["forum", "show", "F-1"])["post"]["refs"],
+        old.json(&["forum", "show", "F-1"])["posts"][0]["refs"],
         json!(["T-00C"])
     );
     assert_eq!(ids(&old.json(&["trash", "list"])["trash"]), ["T-005"]);

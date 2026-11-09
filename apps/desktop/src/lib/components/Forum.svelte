@@ -1,19 +1,35 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  // The forum. Every post is its own entity (`F-01A`) headed by a one-sentence
+  // summary; a post replies to the posts its text opens with tags for. The
+  // sidebar lists the posts that open a thread; the thread view nests each
+  // reply under the post it answers. What is open is the URL (`/F-01A`), so
+  // reference jumps, back and forward all land on the right post.
+  import { onMount, tick } from 'svelte';
   import { get } from 'svelte/store';
-  import { MessageSquarePlus, Search, Send, X, SlidersHorizontal, MessageSquare, Check } from 'lucide-svelte';
+  import { MessageSquarePlus, Search, X, SlidersHorizontal, MessageSquare, Hash } from 'lucide-svelte';
   import ForumPost from './ForumPost.svelte';
+  import PostComposer from './PostComposer.svelte';
   import Avatar from './Avatar.svelte';
+  import Markdown from './Markdown.svelte';
   import WatchToggle from './WatchToggle.svelte';
-  import { openRequest } from '$lib/stores/notify';
-  import { api, subscribeChanges } from '$lib/api';
-  import { currentProject, identities, definitions } from '$lib/stores/board';
+  import { api } from '$lib/api';
+  import {
+    currentProject,
+    identities,
+    definitions,
+    forumPosts,
+    forumFormat,
+    postIndex,
+    loadForum,
+    me
+  } from '$lib/stores/board';
+  import { go, openPost } from '$lib/nav';
+  import { threadsOf, childrenOf, splitReplyTags } from '$lib/forum';
   import { labelColor } from '$lib/utils';
-  import type { ForumPost as Post, ForumThread, ForumThreadSummary } from '$lib/types';
+  import type { ForumPost as Post, ForumThreadSummary } from '$lib/types';
 
-  let threads = $state<ForumThreadSummary[]>([]);
-  let selectedId = $state<string | null>(null);
-  let thread = $state<ForumThread | null>(null);
+  let { focus = null }: { focus?: string | null } = $props();
+
   let error = $state<string | null>(null);
 
   // --- sidebar width (resizable + remembered) ------------------------------
@@ -26,6 +42,7 @@
     } catch {
       /* storage unavailable */
     }
+    void loadForum();
   });
   function startResize(e: PointerEvent) {
     e.preventDefault();
@@ -47,39 +64,147 @@
     window.addEventListener('pointerup', onUp);
   }
 
-  // --- search + filters ----------------------------------------------------
+  // --- what is open ------------------------------------------------------------
+  let threads = $derived(threadsOf($forumPosts));
+  let focusPost = $derived(focus ? $postIndex.get(focus) : undefined);
+  let selectedId = $derived(focusPost?.thread_id ?? null);
+  let root = $derived(selectedId ? $postIndex.get(selectedId) : undefined);
+  let threadPosts = $derived(selectedId ? $forumPosts.filter((p) => p.thread_id === selectedId) : []);
+  let kids = $derived(childrenOf(threadPosts));
+  let openSummary = $derived(threads.find((t) => t.id === selectedId));
+
+  // Land on the post in focus: scroll it into view and highlight it.
+  let landed: string | null = null;
+  $effect(() => {
+    const id = focusPost?.id;
+    if (!id || id === landed) return;
+    landed = id;
+    void tick().then(() => {
+      const row = document.querySelector<HTMLElement>(`[data-post-id="${CSS.escape(id)}"]`);
+      const target = row?.querySelector<HTMLElement>('.bubble') ?? row;
+      if (!row || !target) return;
+      if (id === selectedId) feedEl?.scrollTo({ top: 0, behavior: 'smooth' });
+      else row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.remove('wp-flash');
+      void target.offsetWidth;
+      target.classList.add('wp-flash');
+      setTimeout(() => target.classList.remove('wp-flash'), 1700);
+    });
+  });
+
+  // --- composers -------------------------------------------------------------
+  let composingThread = $state(false);
+  let ntSummary = $state('');
+  let ntBody = $state('');
+  let ntLabels = $state<string[]>([]);
+  // The reply box: its body opens with the tags of the posts it answers - the
+  // thread's opening post by default, the post whose Reply was clicked after.
+  let rSummary = $state('');
+  let rBody = $state('');
+  let rBodyEl = $state<HTMLTextAreaElement | null>(null);
+  let feedEl = $state<HTMLDivElement | null>(null);
+  let composedFor: string | null = null;
+  $effect(() => {
+    if (!selectedId || selectedId === composedFor) return;
+    composedFor = selectedId;
+    rSummary = '';
+    rBody = `@${selectedId} `;
+  });
+  let replyTargets = $derived(splitReplyTags(rBody).tags.filter((t) => /^F-/.test(t)));
+
+  function proj() {
+    return get(currentProject) ?? undefined;
+  }
+
+  async function createThread(p: { summary: string; body: string; labels: string[]; attachments: import('$lib/types').Attachment[] }) {
+    const post = await api.forumCreate(
+      { summary: p.summary, body: p.body, labels: p.labels, attachments: p.attachments },
+      proj()
+    );
+    composingThread = false;
+    await loadForum();
+    await openPost(post.id);
+  }
+
+  async function sendReply(p: { summary: string; body: string; attachments: import('$lib/types').Attachment[] }) {
+    const post = await api.forumCreate(
+      { summary: p.summary, body: p.body, attachments: p.attachments },
+      proj()
+    );
+    await loadForum();
+    // The box stays aimed at the thread.
+    rBody = selectedId ? `@${selectedId} ` : '';
+    await go({ view: 'forum', post: post.id }, true);
+  }
+
+  /** Aim the reply box at `post`: its tag replaces the ones the body opens with. */
+  async function startReply(post: Post) {
+    const { rest } = splitReplyTags(rBody);
+    rBody = `@${post.id} ${rest}`;
+    await tick();
+    rBodyEl?.focus();
+    rBodyEl?.setSelectionRange(rBody.length, rBody.length);
+    rBodyEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  async function saveEdit(post: Post, summary: string, body: string) {
+    try {
+      await api.forumEdit(post.id, { summary, body }, proj());
+      await loadForum();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      throw e;
+    }
+  }
+
+  async function del(post: Post) {
+    try {
+      await api.forumDelete(post.id, proj());
+      await loadForum();
+      if (post.id === selectedId) await go({ view: 'forum' });
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  let copied = $state<string | null>(null);
+  async function copyLink(post: Post) {
+    const url = `${location.origin}/${post.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      copied = post.id;
+      setTimeout(() => (copied = null), 1400);
+    } catch {
+      error = `Link: ${url}`;
+    }
+  }
+
+  // --- search + filters ------------------------------------------------------
   let query = $state('');
-  // Thread ids whose posts match the text query (null = no text filter).
-  let searchThreadIds = $state<Set<string> | null>(null);
   let filtersOpen = $state(false);
   let fIdentities = $state<string[]>([]); // identity ids that must have engaged
   let fOpOnly = $state(false); // ...only as the original poster
   let fLabels = $state<string[]>([]);
   let activeFilters = $derived(fIdentities.length + fLabels.length + (fOpOnly ? 1 : 0));
 
-  // composers
-  let composingThread = $state(false);
-  let ntTitle = $state('');
-  let ntBody = $state('');
-  let ntLabels = $state<string[]>([]);
-  let replyTo = $state<string | null>(null);
-  let replyBody = $state('');
-  let sending = $state(false); // in-flight guard for createThread / sendReply
+  // Threads with a post matching every search word (summary, body, author, id).
+  let searchThreadIds = $derived.by(() => {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const hit = new Set<string>();
+    for (const p of $forumPosts) {
+      const hay = `${p.id} ${p.legacy_id ?? ''} ${p.summary} ${p.body} ${p.author}`.toLowerCase();
+      if (words.every((w) => hay.includes(w))) hit.add(p.thread_id);
+    }
+    return hit;
+  });
 
-  function proj() {
-    return get(currentProject) ?? undefined;
-  }
   function identityFor(id: string) {
-    const direct = $identities.find((i) => i.id === id);
-    if (direct) return direct;
-    const m = id.match(/<([^>]+)>/);
-    return m ? $identities.find((i) => i.id === m[1]) : undefined;
+    const key = (id.match(/<([^>]+)>/)?.[1] ?? id).toLowerCase();
+    return $identities.find((i) => i.id.toLowerCase() === key);
   }
   function displayName(id: string) {
-    const found = identityFor(id);
-    if (found) return found.display_name;
-    const m = id.match(/^(.*?)\s*<[^>]+>$/);
-    return m && m[1] ? m[1] : id;
+    return identityFor(id)?.display_name ?? id.replace(/\s*<[^>]+>$/, '');
   }
   /** Compact "last activity" label: 5s → "now", then m / h / d, then a date. */
   function relativeTime(iso?: string): string {
@@ -97,97 +222,13 @@
     const def = $definitions.labels.find((l) => l.name === name);
     return labelColor(name, def?.color);
   }
-  // Thread whose feed is open — for the header meta row.
-  let openSummary = $derived(threads.find((t) => t.id === selectedId));
-
-  function findPost(root: Post | undefined, id: string): Post | undefined {
-    if (!root) return undefined;
-    if (root.id === id) return root;
-    for (const r of root.replies ?? []) {
-      const hit = findPost(r, id);
-      if (hit) return hit;
-    }
-    return undefined;
-  }
-  // The person you're replying to, by name - never the raw post ID.
-  let replyTargetName = $derived(
-    replyTo && thread && replyTo !== thread.id
-      ? displayName(findPost(thread.root, replyTo)?.author ?? '')
-      : null
-  );
-
-  async function loadThreads() {
-    try {
-      threads = await api.forumThreads(proj());
-      error = null;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
-  // A notification for a thread was clicked: open it.
-  $effect(() => {
-    const id = $openRequest?.thread;
-    if (!id) return;
-    openRequest.set(null);
-    void openThread(id);
-  });
-
-  async function openThread(id: string) {
-    const switching = id !== selectedId;
-    selectedId = id;
-    // Only reset the reply target when actually switching threads, so a background
-    // WS refresh doesn't clobber an in-progress reply aimed at a nested post.
-    if (switching) replyTo = id;
-    try {
-      const t = await api.forumThread(id, proj());
-      if (id !== selectedId) return; // drop a stale response
-      thread = t;
-      // If the reply was aimed at a post that has since been deleted (locally or by
-      // another user, via a WS refresh), re-aim it at the thread root - otherwise
-      // the composer says "reply to thread" but sends to a gone id and 400s.
-      if (replyTo && !findPost(t.root, replyTo)) replyTo = t.id;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
-  async function refresh() {
-    await loadThreads();
-    if (selectedId) {
-      if (threads.some((t) => t.id === selectedId)) await openThread(selectedId);
-      else {
-        selectedId = null;
-        thread = null;
-      }
-    }
-    if (query.trim()) await runSearch();
-  }
-
-  async function runSearch() {
-    const q = query.trim();
-    if (!q) {
-      searchThreadIds = null;
-      return;
-    }
-    try {
-      const matches = await api.forumSearch({ q }, proj());
-      searchThreadIds = new Set(matches.map((m) => m.thread_id));
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
   /** Whether an author string (`Name <email>` or a bare id) refers to identity `id`. */
   function sameIdentity(author: string, id: string): boolean {
-    if (author === id) return true;
-    const m = author.match(/<([^>]+)>/);
-    return m ? m[1] === id : false;
+    const key = (author.match(/<([^>]+)>/)?.[1] ?? author).toLowerCase();
+    return key === id.toLowerCase();
   }
   function toggleFIdentity(id: string) {
-    fIdentities = fIdentities.includes(id)
-      ? fIdentities.filter((x) => x !== id)
-      : [...fIdentities, id];
+    fIdentities = fIdentities.includes(id) ? fIdentities.filter((x) => x !== id) : [...fIdentities, id];
   }
   function toggleFLabel(name: string) {
     fLabels = fLabels.includes(name) ? fLabels.filter((x) => x !== name) : [...fLabels, name];
@@ -198,7 +239,6 @@
     fOpOnly = false;
   }
 
-  // The thread list after applying the text search + identity/OP/label filters.
   let filtered = $derived(
     threads.filter((t) => {
       if (searchThreadIds && !searchThreadIds.has(t.id)) return false;
@@ -227,7 +267,6 @@
     return new Date(iso).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }
 
-  // Interleave activity-bucket dividers into the (already activity-sorted) list.
   type Row = { kind: 'divider'; label: string } | { kind: 'thread'; t: ForumThreadSummary };
   let sidebarItems = $derived.by<Row[]>(() => {
     const out: Row[] = [];
@@ -243,83 +282,13 @@
     return out;
   });
 
-  function toggleNewLabel(name: string) {
-    ntLabels = ntLabels.includes(name) ? ntLabels.filter((l) => l !== name) : [...ntLabels, name];
-  }
-
-  async function createThread() {
-    const title = ntTitle.trim();
-    if (!title || sending) return;
-    sending = true;
-    try {
-      const t = await api.forumPost(
-        { title, body: ntBody.trim() || undefined, labels: ntLabels },
-        proj()
-      );
-      ntTitle = '';
-      ntBody = '';
-      ntLabels = [];
-      composingThread = false;
-      await loadThreads();
-      await openThread(t.id);
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      sending = false;
-    }
-  }
-
-  function startReply(id: string) {
-    replyTo = id;
-    replyBody = '';
-  }
-
-  async function sendReply() {
-    const body = replyBody.trim();
-    if (!body || !replyTo || sending) return;
-    sending = true;
-    try {
-      await api.forumReply(replyTo, { body }, proj());
-      replyBody = '';
-      if (selectedId) await openThread(selectedId);
-      await loadThreads();
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      sending = false;
-    }
-  }
-
-  async function del(id: string) {
-    try {
-      await api.forumDelete(id, proj());
-      if (id === selectedId) {
-        selectedId = null;
-        thread = null;
-      }
-      await refresh();
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
-  // Reload (and reset selection) whenever the current project changes; also the
-  // initial load on mount.
+  // A project switch closes the composer and the filters.
   $effect(() => {
     void $currentProject;
-    selectedId = null;
-    thread = null;
-    searchThreadIds = null;
+    composingThread = false;
     query = '';
     clearFilters();
-    void loadThreads();
   });
-
-  let unsub: (() => void) | null = null;
-  onMount(() => {
-    unsub = subscribeChanges(() => void refresh());
-  });
-  onDestroy(() => unsub?.());
 </script>
 
 <div class="forum" class:reading={!!selectedId} style="--sw:{sidebarWidth}px">
@@ -332,55 +301,25 @@
     </div>
 
     {#if composingThread}
-      <div class="composer">
-        <input class="in" placeholder="Thread title" bind:value={ntTitle} />
-        <textarea class="in ta" rows="3" placeholder="Say something… (Markdown)" bind:value={ntBody}
-        ></textarea>
-        {#if $definitions.labels.length}
-          <div class="pool">
-            {#each $definitions.labels as label (label.name)}
-              <button
-                type="button"
-                class="pchip"
-                class:on={ntLabels.includes(label.name)}
-                style="--c:{labelColor(label.name, label.color)}"
-                onclick={() => toggleNewLabel(label.name)}
-              >
-                {label.name}
-              </button>
-            {/each}
-          </div>
-        {/if}
-        <div class="crow">
-          <button class="ghost" onclick={() => (composingThread = false)}>Cancel</button>
-          <button class="prim" disabled={!ntTitle.trim() || sending} onclick={createThread}
-            >Post thread</button
-          >
-        </div>
-      </div>
+      <PostComposer
+        bind:summary={ntSummary}
+        bind:body={ntBody}
+        bind:labels={ntLabels}
+        withLabels
+        compact
+        submitLabel="Post thread"
+        summaryPlaceholder="Thread summary - the point, in one sentence"
+        onsubmit={createThread}
+        oncancel={() => (composingThread = false)}
+      />
     {/if}
 
     <div class="searchrow">
       <div class="searchbar">
         <Search size={14} />
-        <input
-          class="sin"
-          placeholder="Search…"
-          bind:value={query}
-          onkeydown={(e) => e.key === 'Enter' && runSearch()}
-          oninput={() => {
-            if (!query.trim()) searchThreadIds = null;
-          }}
-        />
+        <input class="sin" placeholder="Search posts…" bind:value={query} />
         {#if query}
-          <button
-            class="sclear"
-            aria-label="Clear search"
-            onclick={() => {
-              query = '';
-              searchThreadIds = null;
-            }}><X size={12} /></button
-          >
+          <button class="sclear" aria-label="Clear search" onclick={() => (query = '')}><X size={12} /></button>
         {/if}
       </div>
       <button
@@ -402,11 +341,7 @@
         </div>
         <div class="fpool">
           {#each $identities as id (id.id)}
-            <button
-              class="ichip"
-              class:on={fIdentities.includes(id.id)}
-              onclick={() => toggleFIdentity(id.id)}
-            >
+            <button class="ichip" class:on={fIdentities.includes(id.id)} onclick={() => toggleFIdentity(id.id)}>
               <Avatar id={id.id} identity={id} size={15} />
               <span class="iname">{id.display_name || id.id}</span>
             </button>
@@ -433,9 +368,7 @@
 
     {#if sidebarItems.length === 0}
       <div class="empty">
-        {threads.length === 0
-          ? 'No threads yet. Start one with New.'
-          : 'No threads match your filters.'}
+        {threads.length === 0 ? 'No threads yet. Start one with New.' : 'No threads match.'}
       </div>
     {:else}
       {#each sidebarItems as item (item.kind === 'divider' ? 'd:' + item.label : item.t.id)}
@@ -443,19 +376,25 @@
           <div class="seg">{item.label}</div>
         {:else}
           {@const t = item.t}
-          <button
+          <a
             class="threadrow"
             class:active={t.id === selectedId}
-            onclick={() => openThread(t.id)}
+            href="/{t.id}"
+            onclick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+              e.preventDefault();
+              void openPost(t.id);
+            }}
           >
             <div class="tr-top">
-              <span class="tr-title">{t.title}</span>
+              <span class="tr-title"><Markdown source={t.title} inline /></span>
               <span class="tr-count" title="{t.posts} post{t.posts === 1 ? '' : 's'}">
                 <MessageSquare size={11} />{t.posts}
               </span>
             </div>
             {#if t.snippet}<div class="tr-snip">{t.snippet}</div>{/if}
             <div class="tr-sub">
+              <span class="tr-id">{t.id}</span>
               {#if t.labels?.length}
                 <span class="tr-labels">
                   {#each t.labels.slice(0, 2) as l (l)}
@@ -469,76 +408,74 @@
                 <span class="tr-time" title="last activity">{relativeTime(t.updated ?? t.created)}</span>
               </span>
             </div>
-          </button>
+          </a>
         {/if}
       {/each}
     {/if}
+    {#if $forumFormat === 'threads'}
+      <p class="legacy">
+        <Hash size={11} /> This board still has the old thread forum - <b>New ids</b> (top right) gives every
+        post its own id.
+      </p>
+    {/if}
   </aside>
 
-  <div
-    class="resizer"
-    role="separator"
-    aria-orientation="vertical"
-    tabindex="-1"
-    onpointerdown={startResize}
-  ></div>
+  <div class="resizer" role="separator" aria-orientation="vertical" tabindex="-1" onpointerdown={startResize}></div>
 
   <section class="thread">
-    {#if error}<div class="err">{error}</div>{/if}
-    {#if thread}
-      <button class="back" onclick={() => (selectedId = null)}>&larr; All threads</button>
+    {#if error}<div class="err">{error} <button class="rx" onclick={() => (error = null)}><X size={11} /></button></div>{/if}
+    {#if root}
+      <button class="back" onclick={() => go({ view: 'forum' })}>&larr; All threads</button>
       <header class="th-head">
-        <h2>{thread.title}</h2>
+        <h2><Markdown source={root.summary} inline /></h2>
         <div class="th-meta">
-          <span class="thread-id">{thread.id}</span>
-          <WatchToggle kind="threads" id={thread.id} label={false} />
+          <span class="thread-id">{root.id}</span>
+          {#if root.legacy_id}<span class="thread-id" title="Its id before the forum moved to one file per post">(was {root.legacy_id})</span>{/if}
+          <WatchToggle kind="threads" id={root.id} label={false} />
           <span class="dot">·</span>
-          <span>started by {displayName(thread.root.author)}</span>
+          <span>started by {displayName(root.author)}</span>
           {#if openSummary}
             <span class="dot">·</span>
             <span>{openSummary.posts} post{openSummary.posts === 1 ? '' : 's'}</span>
             <span class="dot">·</span>
             <span>active {relativeTime(openSummary.updated)}</span>
           {/if}
-          {#if openSummary?.labels?.length}
-            <span class="th-labels">
-              {#each openSummary.labels as l (l)}
-                <span class="tr-chip" style="--c:{labelColorFor(l)}">{l}</span>
-              {/each}
-            </span>
-          {/if}
+          {#if copied}<span class="copied">link copied</span>{/if}
         </div>
       </header>
-      <div class="feed wp-scroll">
-        <ForumPost post={thread.root} onreply={startReply} ondelete={del} />
+      <div class="feed wp-scroll" bind:this={feedEl}>
+        <ForumPost
+          post={root}
+          {kids}
+          meId={$me?.id ?? null}
+          onreply={startReply}
+          onsave={saveEdit}
+          ondelete={del}
+          oncopy={copyLink}
+        />
       </div>
       <div class="replybar">
-        {#if replyTargetName}
-          <div class="replying">
-            replying to {replyTargetName}
-            <button class="rx" aria-label="Reply to thread instead" onclick={() => (replyTo = thread!.id)}>
-              <X size={12} />
-            </button>
-          </div>
-        {/if}
-        <div class="c-add">
-          <textarea
-            class="c-input"
-            rows="2"
-            placeholder={replyTargetName ? `Reply to ${replyTargetName}…` : 'Reply to this thread…'}
-            bind:value={replyBody}
-            onkeydown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendReply();
-            }}
-          ></textarea>
-          <button
-            class="c-send"
-            aria-label="Send reply"
-            disabled={!replyBody.trim() || sending}
-            onclick={sendReply}><Send size={15} /></button
-          >
+        <div class="replying">
+          {#if replyTargets.length}
+            replying to
+            {#each replyTargets as id (id)}<span class="rt">{id}</span>{/each}
+            <span class="rhint">- the tags the text opens with decide what it answers</span>
+          {:else}
+            <span class="rhint">no post tag at the start: this becomes a new thread</span>
+          {/if}
         </div>
+        <PostComposer
+          bind:summary={rSummary}
+          bind:body={rBody}
+          bind:bodyEl={rBodyEl}
+          compact
+          submitLabel="Reply"
+          summaryPlaceholder="Summary of your reply - one sentence"
+          onsubmit={sendReply}
+        />
       </div>
+    {:else if focus && $forumPosts.length}
+      <div class="pick">{focus} isn't in this forum.</div>
     {:else}
       <div class="pick">Select a thread, or start a new one.</div>
     {/if}
@@ -632,9 +569,7 @@
     letter-spacing: 0.06em;
     color: var(--wp-text-muted);
   }
-  .new,
-  .prim,
-  .ghost {
+  .new {
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -650,29 +585,6 @@
   .new:hover {
     color: var(--wp-text);
     background: var(--wp-elevated);
-  }
-  .prim {
-    background: var(--wp-accent);
-    color: var(--wp-on-accent);
-    border-color: transparent;
-  }
-  .prim:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .composer {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px;
-    border: 1px solid var(--wp-border);
-    border-radius: var(--wp-r-md);
-    background: var(--wp-surface);
-  }
-  .pool {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
   }
   .pchip {
     display: inline-flex;
@@ -699,24 +611,6 @@
     background: color-mix(in srgb, var(--c) 16%, transparent);
     border-color: var(--c);
     color: var(--wp-text);
-  }
-  .crow {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-  }
-  .in {
-    padding: 6px 8px;
-    border-radius: var(--wp-r-sm);
-    border: 1px solid var(--wp-border);
-    background: var(--wp-canvas);
-    color: var(--wp-text);
-    font-size: 13px;
-    width: 100%;
-  }
-  .ta {
-    resize: vertical;
-    font-family: var(--wp-font-sans);
   }
   .searchrow {
     display: flex;
@@ -990,8 +884,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .tr-labels,
-  .th-labels {
+  .tr-labels {
     display: flex;
     flex-wrap: nowrap;
     gap: 4px;
@@ -1060,9 +953,6 @@
   .th-meta .dot {
     opacity: 0.5;
   }
-  .th-meta .th-labels {
-    margin-left: 2px;
-  }
   .feed {
     flex: 1;
     overflow-y: auto;
@@ -1087,37 +977,52 @@
     color: var(--wp-text-subtle);
     cursor: pointer;
   }
-  .c-add {
-    display: flex;
-    gap: 8px;
-    align-items: flex-end;
-  }
-  .c-input {
-    flex: 1;
-    resize: vertical;
-    padding: 8px 10px;
-    border-radius: var(--wp-r-md);
-    border: 1px solid var(--wp-border);
-    background: var(--wp-canvas);
-    color: var(--wp-text);
-    font-size: 13px;
-  }
-  .c-send {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 36px;
-    width: 36px;
-    flex: none;
-    border-radius: var(--wp-r-sm);
-    border: none;
-    background: var(--wp-accent);
-    color: var(--wp-on-accent);
-    cursor: pointer;
-  }
   .err {
     font-size: 12px;
     color: var(--wp-error);
     padding: 4px 0;
+  }
+  a.threadrow {
+    text-decoration: none;
+  }
+  .tr-id {
+    font-family: var(--wp-font-mono);
+    font-size: 10.5px;
+    color: var(--wp-text-subtle);
+    flex: none;
+  }
+  .tr-title :global(.wref) {
+    font-size: 0.8em;
+  }
+  .legacy {
+    display: flex;
+    gap: 5px;
+    align-items: baseline;
+    margin: 8px 2px 4px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--wp-text-subtle);
+  }
+  .copied {
+    font-size: 11px;
+    color: var(--wp-accent);
+  }
+  .rt {
+    font-family: var(--wp-font-mono);
+    font-size: 10.5px;
+    padding: 0 5px;
+    border-radius: 4px;
+    color: var(--wp-focus);
+    background: color-mix(in srgb, var(--wp-focus) 13%, transparent);
+  }
+  .rhint {
+    color: var(--wp-text-subtle);
+  }
+  .replying {
+    flex-wrap: wrap;
+    color: var(--wp-text-muted);
+  }
+  .feed :global(.bubble.wp-flash) {
+    animation: wp-flash 1.6s var(--wp-ease);
   }
 </style>

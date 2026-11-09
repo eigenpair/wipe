@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { mdkeys } from '$lib/md';
+  import Markdown from './Markdown.svelte';
+  import { mention } from '$lib/mention';
   import { Check, Plus, X, Icon as IconBase } from 'lucide-svelte';
   import type { ChecklistItem } from '$lib/types';
 
@@ -80,6 +83,8 @@
           {#if editing === item.id}
             <!-- svelte-ignore a11y_autofocus -->
             <input
+              use:mention
+              use:mdkeys
               class="ck-edit"
               autofocus
               bind:value={editDraft}
@@ -93,7 +98,7 @@
               }}
             />
           {:else}
-            <button class="ck-text" onclick={() => startEdit(item)}>{item.text}</button>
+            <button class="ck-text" onclick={() => startEdit(item)}><Markdown source={item.text} inline /></button>
           {/if}
           <button class="ck-del" aria-label="Remove" onclick={() => remove(item.id)}>
             <X size={13} />
@@ -105,6 +110,8 @@
   <div class="ck-add">
     <Plus size={14} class="ck-addicon" />
     <input
+      use:mention
+      use:mdkeys
       class="ck-newinput"
       {placeholder}
       bind:value={newItem}

@@ -4,6 +4,7 @@
   import { get } from 'svelte/store';
   import { X, Plus, Trash2 } from 'lucide-svelte';
   import Button from './ui/Button.svelte';
+  import Avatar from './Avatar.svelte';
   import { api, getApiBase, setApiBase } from '$lib/api';
   import {
     board,
@@ -11,12 +12,14 @@
     definitions,
     currentProject,
     loadDefinitions,
+    loadIdentities,
+    loadMe,
+    me,
     loadProjects,
     bootstrap,
     stopLiveUpdates
   } from '$lib/stores/board';
   import { labelColor, LABEL_COLORS, LABEL_KEYS } from '$lib/utils';
-  import type { AppConfig } from '$lib/types';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -29,8 +32,7 @@
   let recoloring = $state<string | null>(null);
   let error = $state<string | null>(null);
 
-  // User-global preferences (default identity) + board discovery.
-  let cfg = $state<AppConfig>({});
+  // Saving the alias; board discovery.
   let savingCfg = $state(false);
   let scanMsg = $state<string | null>(null);
 
@@ -43,29 +45,26 @@
       apiBaseInput = getApiBase();
       scanMsg = null;
       error = null;
-      void loadCfg();
     }
   });
 
-  async function loadCfg() {
-    try {
-      cfg = await api.appConfig();
-    } catch {
-      /* config is non-critical */
-    }
-  }
-
-  async function saveCfg() {
+  // Your identity is your git account; only the alias (display name) is yours to pick.
+  let alias = $state('');
+  let aliasMsg = $state<string | null>(null);
+  $effect(() => {
+    if (open) alias = $me?.display_name ?? '';
+  });
+  async function saveAlias() {
+    const m = $me;
+    const name = alias.trim();
+    if (!m || !name) return;
     savingCfg = true;
     error = null;
+    aliasMsg = null;
     try {
-      // Only send a non-empty identity (the daemon leaves an omitted field
-      // unchanged); never silently coerce an untouched field to "human".
-      const id = cfg.default_identity?.trim();
-      cfg = await api.patchConfig({
-        default_identity: id ? id : undefined,
-        prefer_default_identity: cfg.prefer_default_identity ?? false
-      });
+      await api.putIdentity(m.id, name, 'human', proj());
+      await Promise.all([loadIdentities(), loadMe()]);
+      aliasMsg = 'saved';
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -223,28 +222,43 @@
           <p class="hint">Rename isn't supported; delete strips the label from all tickets.</p>
         </section>
 
-        <!-- identity -->
+        <!-- you: identity from git, alias chosen here -->
         <section class="sec">
-          <span class="flabel">Identity</span>
-          <input
-            class="in"
-            bind:value={cfg.default_identity}
-            placeholder="human"
-            aria-label="Default identity"
-          />
-          <label class="check">
-            <input type="checkbox" bind:checked={cfg.prefer_default_identity} />
-            Always use this identity, even when version control reports one
-          </label>
-          <p class="hint">
-            Used to attribute changes when your project's version control (git, Plastic, …)
-            reports no user - so nothing is ever "unknown".
-          </p>
-          <div class="actions">
-            <Button variant="primary" size="sm" onclick={saveCfg} disabled={savingCfg}>
-              {savingCfg ? 'Saving…' : 'Save identity'}
-            </Button>
-          </div>
+          <span class="flabel">You</span>
+          {#if $me}
+            <div class="you">
+              <Avatar id={$me.id} size={30} />
+              <div class="you-txt">
+                <span class="you-name">{$me.name}</span>
+                <span class="you-id">{$me.id}</span>
+              </div>
+            </div>
+            <label class="alias">
+              <span>Alias</span>
+              <input
+                class="in"
+                bind:value={alias}
+                placeholder={$me.name}
+                aria-label="Your alias"
+                onkeydown={(e) => e.key === 'Enter' && saveAlias()}
+              />
+            </label>
+            <p class="hint">
+              Your identity is your git account (user.name / user.email) and can't be switched here -
+              choose the alias you show up as. Agents you run on this board are listed as yours.
+            </p>
+            <div class="actions">
+              {#if aliasMsg}<span class="scanmsg">{aliasMsg}</span>{/if}
+              <Button variant="primary" size="sm" onclick={saveAlias} disabled={savingCfg || !alias.trim()}>
+                {savingCfg ? 'Saving…' : 'Save alias'}
+              </Button>
+            </div>
+          {:else}
+            <p class="hint">
+              No git identity found for this board - set <code>git config user.name</code> and
+              <code>user.email</code> in its repository.
+            </p>
+          {/if}
         </section>
 
         <!-- discovery -->
@@ -477,14 +491,6 @@
     justify-content: flex-end;
     gap: 10px;
   }
-  .check {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: var(--wp-text-muted);
-    cursor: pointer;
-  }
   .scanmsg {
     font-size: 12px;
     color: var(--wp-text-subtle);
@@ -493,5 +499,34 @@
   .err {
     font-size: 12px;
     color: var(--wp-error);
+  }
+  .you {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .you-txt {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .you-name {
+    font-weight: 600;
+    font-size: 13.5px;
+  }
+  .you-id {
+    font-family: var(--wp-font-mono);
+    font-size: 11.5px;
+    color: var(--wp-text-subtle);
+  }
+  .alias {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--wp-text-muted);
+  }
+  .alias .in {
+    flex: 1;
   }
 </style>

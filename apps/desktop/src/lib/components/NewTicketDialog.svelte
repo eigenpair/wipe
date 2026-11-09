@@ -7,6 +7,9 @@
   import AssigneePicker from './AssigneePicker.svelte';
   import LocalChecks from './LocalChecks.svelte';
   import StagedMedia from './StagedMedia.svelte';
+  import MdToolbar from './MdToolbar.svelte';
+  import { mdkeys, mdlists } from '$lib/md';
+  import { mention } from '$lib/mention';
   import { api } from '$lib/api';
   import { definitions, currentProject, loadBoard } from '$lib/stores/board';
   import { filesFromClipboard, looksLikePath, autosize } from '$lib/utils';
@@ -148,6 +151,7 @@
   function onKey(e: KeyboardEvent) {
     if (e.key === 'Escape' && open && !e.defaultPrevented) open = false;
   }
+  let bodyArea = $state<HTMLTextAreaElement | null>(null);
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -195,6 +199,8 @@
           bind:value={title}
           use:autofocus
           use:autosize={title}
+          use:mention
+          use:mdkeys
           onpaste={onPasteStage}
           onkeydown={(e) => {
             if (e.key === 'Enter') {
@@ -225,14 +231,21 @@
 
         <div class="field">
           <span class="flabel">Description</span>
-          <textarea
-            class="in ta"
-            rows="4"
-            bind:value={body}
-            use:autosize={body}
-            onpaste={onPasteStage}
-            placeholder="Markdown supported…"
-          ></textarea>
+          <div class="editor">
+            <MdToolbar target={bodyArea} />
+            <textarea
+              class="in ta"
+              rows="4"
+              bind:this={bodyArea}
+              bind:value={body}
+              use:autosize={body}
+              use:mention
+              use:mdkeys
+              use:mdlists
+              onpaste={onPasteStage}
+              placeholder="Markdown supported - @ to reference…"
+            ></textarea>
+          </div>
         </div>
 
         <LocalChecks
@@ -501,5 +514,21 @@
   .fb.primary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+  .editor {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--wp-border);
+    border-radius: var(--wp-r-md);
+    overflow: hidden;
+    background: var(--wp-canvas);
+  }
+  .editor :global(.mdbar) {
+    border-bottom: 1px solid var(--wp-border);
+    background: var(--wp-surface);
+  }
+  .editor .ta {
+    border: none;
+    border-radius: 0;
   }
 </style>

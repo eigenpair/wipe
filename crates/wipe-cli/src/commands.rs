@@ -255,15 +255,16 @@ pub fn identity(out: &Out, cmd: IdentityCmd) -> Result<()> {
                     } else {
                         " "
                     };
-                    let kind = match i.kind {
-                        IdentityKind::Agent => "agent",
-                        IdentityKind::Human => "human",
+                    let kind = match (&i.kind, &i.owner) {
+                        (IdentityKind::Agent, Some(o)) => format!("agent of {o}"),
+                        (IdentityKind::Agent, None) => "agent".to_string(),
+                        (IdentityKind::Human, _) => "human".to_string(),
                     };
                     println!(
                         "{mark} {}  {}  {}",
                         id_style(&i.id),
                         i.display_name,
-                        dim(kind)
+                        dim(&kind)
                     );
                 }
                 if let Some(a) = &active {
@@ -274,25 +275,58 @@ pub fn identity(out: &Out, cmd: IdentityCmd) -> Result<()> {
             }
         }
         IdentityCmd::Use(a) => {
-            if a.id.trim().is_empty() {
+            let requested = a.id.trim().to_string();
+            if requested.is_empty() {
                 bail!("identity id cannot be empty");
             }
-            let is_email = a.id.contains('@');
+            let is_email = requested.contains('@');
             let agent = a.agent || (!a.human && !is_email);
-            let name = a.name.clone().unwrap_or_else(|| a.id.clone());
-            if let Ok(store) = Store::discover(".") {
-                let kind = if agent {
-                    IdentityKind::Agent
-                } else {
-                    IdentityKind::Human
-                };
-                let _ = ops::upsert_identity(&store, &a.id, &name, Some(kind));
+            let account = crate::identity::account();
+            let mut note = None;
+            let id = match Store::discover(".") {
+                // A person's identity is their git account: only its alias can be chosen.
+                Ok(store) if !agent => {
+                    match &account {
+                        Some(me) if !me.eq_ignore_ascii_case(&requested) => bail!(
+                            "`{requested}` is not your git account ({me}) - a person's identity \
+                             always comes from git. Use `wipe identity use {me} --name <alias>` \
+                             for yours, or an agent id for an agent."
+                        ),
+                        _ => {}
+                    }
+                    if let Some(n) = &a.name {
+                        ops::upsert_identity(&store, &requested, n, Some(IdentityKind::Human))?;
+                    }
+                    requested.clone()
+                }
+                Ok(store) => {
+                    let (ident, claim) = ops::claim_agent(
+                        &store,
+                        &requested,
+                        a.name.as_deref(),
+                        account.as_deref(),
+                    )?;
+                    if claim == ops::Claim::Variant {
+                        note = Some(format!(
+                            "`{requested}` is another person's agent here, so yours is `{}`",
+                            ident.id
+                        ));
+                    }
+                    ident.id
+                }
+                Err(_) => requested.clone(),
+            };
+            let name = a.name.clone().unwrap_or_else(|| id.clone());
+            crate::identity::set_active(&id)?;
+            let hint = crate::identity::export_hint(&id);
+            if let (Some(n), false) = (&note, out.json) {
+                out.line(dim(n));
             }
-            crate::identity::set_active(&a.id)?;
-            let hint = crate::identity::export_hint(&a.id);
             out.ok(
-                format!("actions in this session are now by {}", a.id),
-                json!({ "ok": true, "id": a.id, "name": name, "agent": agent, "export": hint }),
+                format!("actions in this session are now by {id}"),
+                json!({ "ok": true, "id": id, "requested": requested, "name": name,
+                        "agent": agent, "owner": if agent { account } else { None },
+                        "note": note, "export": hint }),
             );
             if !out.json {
                 println!("  scripts or tools that run wipe outside this session can pin it with:");
@@ -601,8 +635,8 @@ pub fn board(out: &Out, cmd: BoardCmd) -> Result<()> {
         }
         BoardCmd::TranslateIds { yes } => {
             let board = s.load_board()?;
-            if board.ids == wipe_core::model::IdFormat::Hex {
-                // Already hex: finish anything the translation never reached.
+            if !wipe_core::translate::needed(&board) {
+                // Already current: finish anything the translation never reached.
                 let r = wipe_core::translate::repair(&s, Utc::now())?;
                 out.ok(
                     format!("this board already uses hex ticket ids - {}", ids::repair_summary(&r)),
@@ -610,20 +644,40 @@ pub fn board(out: &Out, cmd: BoardCmd) -> Result<()> {
                 );
                 return Ok(());
             }
-            let n = s.ticket_ids()?.len();
+            let mut what = Vec::new();
+            if board.ids != wipe_core::model::IdFormat::Hex {
+                what.push(format!(
+                    "{} ticket ids to the hex format (T-23 -> T-017)",
+                    s.ticket_ids()?.len()
+                ));
+            }
+            if board.forum == wipe_core::model::ForumFormat::Threads {
+                what.push(
+                    "the forum to one file per post (F-3.1 -> F-00A, replies by @ tag)".to_string(),
+                );
+            }
+            let what = what.join(" and ");
             if !yes {
                 let interactive =
                     !out.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
                 if !interactive {
-                    bail!("translating {n} ticket ids rewrites the board - pass --yes to confirm");
+                    bail!(
+                        "converting {what} is a BREAKING change: everyone who uses this board must \
+                         update wipe to 1.1 or newer - older versions can't read the converted \
+                         board. Commit or merge open work first. Agents: ask your user before \
+                         converting. Re-run with --yes to confirm."
+                    );
                 }
-                let ok = inquire::Confirm::new(&format!(
-                    "Translate {n} ticket ids to the hex format (T-23 -> T-017)?"
-                ))
-                .with_default(false)
-                .with_help_message("commit/merge open branches first; old ids keep working")
-                .prompt()
-                .unwrap_or(false);
+                eprintln!(
+                    "Breaking change: everyone who uses this board must update wipe to 1.1 or \
+                     newer -\nolder versions can't read the converted board. Commit or merge open \
+                     work first,\nand have everyone update and sync right after."
+                );
+                let ok = inquire::Confirm::new(&format!("Convert {what}?"))
+                    .with_default(false)
+                    .with_help_message("commit/merge open branches first; old ids keep working")
+                    .prompt()
+                    .unwrap_or(false);
                 if !ok {
                     bail!("cancelled - nothing changed");
                 }
@@ -637,7 +691,7 @@ pub fn board(out: &Out, cmd: BoardCmd) -> Result<()> {
                 .collect();
             out.write(
                 format!(
-                    "translated {} ticket ids ({}{}); old ids still resolve",
+                    "translated {} ids ({}{}); old ids still resolve",
                     pairs.len(),
                     sample.join(", "),
                     if pairs.len() > 3 { ", ..." } else { "" }

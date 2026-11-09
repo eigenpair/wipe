@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.1.0 - 2026-11-09
+
+> **Breaking for converted boards:** converting a board (**New ids** in the UI,
+> `wipe board translate-ids`) rewrites its forum into a format wipe 1.0 can't
+> read. Everyone who uses a board must update to 1.1 before it is converted.
+> Both the UI and the CLI say so and ask for an explicit confirmation; agents
+> are told to ask their user first. Boards that aren't converted keep working
+> with 1.0 and 1.1 side by side.
+
+### References: one `@` syntax for everything
+
+- `@T-02A` (ticket), `@F-01C` (forum post) and `@claude` / `@ada@example.com`
+  (people and agents) are recognised in every text - descriptions, comments,
+  titles, checklist items, criteria, forum posts - and shown as chips. Hovering
+  one shows a compact preview card; clicking follows it: inside a ticket the
+  popup switches to the referenced ticket, on the board the card is scrolled
+  into view and highlighted, a post opens its thread at that post.
+- Typing `@` suggests as you type: people and agents first, then tickets and
+  posts by what they say (titles and summaries first). `@T5` / `@F2a` search by
+  id - the dash is put in for you. Arrows + Enter pick.
+- **Mentions count like assignments**: the person mentioned gets a
+  notification in the board UI, it reaches an agent's `wipe inbox` (reason
+  `mentioned`) and its `[wipe]` updates, and a mention of you is highlighted.
+- **Real page links**: `/T-023` opens a ticket, `/F-01A` a forum post,
+  `/forum` the forum, so back/forward walk every jump and links can be shared.
+
+### The forum, reworked
+
+- Every post - opening post or reply - is its own entity with a hex id
+  (`F-01A`) in its own file, headed by a **required one-sentence summary**
+  (`--summary`, `-s`; `--title` still works).
+- No built-in hierarchy: a post replies to the posts its text *opens* with
+  tags for (`@F-01A @F-01C ...`, several allowed); any tag later in the text is
+  a plain reference. Replying puts the tag in front of your text for you. The
+  sidebar lists the posts that reply to nothing; deleting a post leaves its
+  replies.
+- Posts take attachments: paste, drop or pick files in the composer.
+- Boards from before 1.1 keep their thread forum until converted - **New ids**
+  in the UI / `wipe board translate-ids` now converts both ticket ids and the
+  forum (posts numbered in the order written, old `F-3.1` ids kept as aliases,
+  replies get their parent's tag and a summary from their first sentence, every
+  `F-3.1` mention rewritten).
+
+### Identities
+
+- A person's identity is their git account: it can't be switched in the UI any
+  more, only the alias you show up as (Board settings → You).
+- Agents belong to the git account of the person running them, shown wherever
+  identities are listed ("Ada's agent"). Picking an agent name another person's
+  agent holds gives you your own variant (`claude02`); ids stay unique.
+- When a sync meets two people's agents with one id, the incoming one keeps it
+  and yours is renamed (`claude02`) with its tickets, posts and mentions -
+  never a conflict.
+
+### Editing and viewing
+
+- Markdown controls everywhere: Ctrl/Cmd + B / I / U (+ E code, K link,
+  Shift+X strike) in every text field, a compact formatting bar for
+  descriptions, comments and posts, list continuation on Enter. Titles and
+  checklist items render their inline formatting.
+- The ticket popup shows its activity as a section of its own beside the
+  ticket, scrolling on its own and wider, so long discussions never stretch the
+  ticket and tables have room; the backdrop is darker and blurred.
+- Image previews zoom with the mouse wheel around the cursor, a click zooms in
+  on a spot, and a zoomed image pans by dragging (+ / - / 0 on the keyboard).
+- The top bar shows the search shortcut (Ctrl/Cmd+F) beside the view switch.
+
 ## 1.0.1 - 2026-11-03
 
 - **wipe moved to [eigenpair/wipe](https://github.com/eigenpair/wipe).** Repository links,

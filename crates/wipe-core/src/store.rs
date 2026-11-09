@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::model::{Board, Definitions, Identity, Settings, Thread, Ticket};
+use crate::model::{Board, Definitions, ForumEntry, Identity, Settings, Thread, Ticket};
 
 /// Name of the per-project board directory.
 pub const WIPE_DIR: &str = ".wipe";
@@ -483,16 +483,62 @@ impl Store {
                 }
             }
         }
-        ids.sort_by_key(|id| thread_counter(id).unwrap_or(u64::MAX));
+        // Counter order for both decimal (`F-9` < `F-10`) and zero-padded hex ids.
+        ids.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
         Ok(ids)
     }
 
-    /// Load every forum thread on disk, ordered by ID counter.
+    /// Load every legacy forum thread on disk (files in the one-file-per-post
+    /// format are skipped), ordered by ID.
     pub fn load_all_threads(&self) -> Result<Vec<Thread>> {
+        let mut out = Vec::new();
+        for id in self.thread_ids()? {
+            if let ForumFile::Thread(t) = self.load_forum_file(&id)? {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Load one forum file, whichever format it is in.
+    pub fn load_forum_file(&self, id: &str) -> Result<ForumFile> {
+        if !valid_thread_id(id) {
+            return Err(Error::PostNotFound(id.to_string()));
+        }
+        let path = self.thread_path(id);
+        if !path.exists() {
+            return Err(Error::PostNotFound(id.to_string()));
+        }
+        let v: serde_json::Value = read_json(&path)?;
+        Ok(if v.get("root").is_some() {
+            ForumFile::Thread(serde_json::from_value(v)?)
+        } else {
+            ForumFile::Post(serde_json::from_value(v)?)
+        })
+    }
+
+    /// Every forum file on disk, whichever format each is in, ordered by ID.
+    pub fn load_forum(&self) -> Result<Vec<ForumFile>> {
         self.thread_ids()?
             .iter()
-            .map(|id| self.load_thread(id))
+            .map(|id| self.load_forum_file(id))
             .collect()
+    }
+
+    /// Load a one-file-per-post forum post.
+    pub fn load_entry(&self, id: &str) -> Result<ForumEntry> {
+        match self.load_forum_file(id)? {
+            ForumFile::Post(p) => Ok(p),
+            ForumFile::Thread(_) => Err(Error::PostNotFound(id.to_string())),
+        }
+    }
+
+    /// Write a one-file-per-post forum post.
+    pub fn save_entry(&self, post: &ForumEntry) -> Result<()> {
+        if !valid_thread_id(&post.id) {
+            return Err(Error::msg(format!("invalid post id `{}`", post.id)));
+        }
+        write_json_atomic(&self.thread_path(&post.id), post)
     }
 }
 
@@ -530,14 +576,16 @@ fn valid_ticket_id(id: &str) -> bool {
 /// (path separators, `..`, dots) guarantees a caller-supplied ID can never be
 /// turned into a path that escapes the forum directory.
 fn valid_thread_id(id: &str) -> bool {
-    matches!(id.strip_prefix("F-"), Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    matches!(id.strip_prefix("F-"), Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Parse the numeric counter out of an `F-<n>` thread ID (ignoring any `.x` tail).
-fn thread_counter(id: &str) -> Option<u64> {
-    id.strip_prefix("F-")
-        .map(|rest| rest.split('.').next().unwrap_or(rest))
-        .and_then(|n| n.parse().ok())
+/// A forum file: a whole thread (boards before 1.1) or a single post.
+#[derive(Debug, Clone)]
+pub enum ForumFile {
+    /// A legacy thread with its nested replies.
+    Thread(Thread),
+    /// One post.
+    Post(ForumEntry),
 }
 
 /// Parse the numeric counter out of a `T-<n>` ticket ID (hex on hex boards).

@@ -4,6 +4,9 @@
   import { api } from '$lib/api';
   import { currentProject, markSelfChange, applyTicket } from '$lib/stores/board';
   import type { ChecklistItem, ChecksKind, Ticket } from '$lib/types';
+  import Markdown from './Markdown.svelte';
+  import { mdkeys } from '$lib/md';
+  import { mention } from '$lib/mention';
 
   let {
     kind,
@@ -122,6 +125,8 @@
               class="ck-edit"
               autofocus
               bind:value={editDraft}
+              use:mention
+              use:mdkeys
               onblur={() => saveEditItem(item.id)}
               onkeydown={(e) => {
                 if (e.key === 'Enter') e.currentTarget.blur();
@@ -134,8 +139,14 @@
               }}
             />
           {:else}
-            <button class="ck-text" class:ro={readOnly} onclick={() => startEditItem(item)}
-              >{item.text}</button
+            <button
+              class="ck-text"
+              class:ro={readOnly}
+              onclick={(e) => {
+                // A reference chip navigates instead of editing.
+                if ((e.target as Element).closest('.wref')) return;
+                startEditItem(item);
+              }}><Markdown source={item.text} inline /></button
             >
           {/if}
           {#if !readOnly}
@@ -154,6 +165,8 @@
         class="ck-newinput"
         {placeholder}
         bind:value={newItem}
+        use:mention
+        use:mdkeys
         onkeydown={(e) => {
           if (e.key === 'Enter') {
             e.preventDefault();

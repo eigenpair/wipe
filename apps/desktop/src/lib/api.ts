@@ -7,10 +7,11 @@ import type {
   ChecksKind,
   CreateTicketInput,
   Definitions,
+  ForumFormat,
   ForumMatch,
   ForumPost,
-  ForumThread,
   ForumThreadSummary,
+  Me,
   Health,
   Identity,
   IdentityKind,
@@ -137,20 +138,16 @@ function fillBoard(b: Board): Board {
   };
 }
 
-/** The daemon omits empty arrays; a leaf post arrives with no `replies`. Restore
- *  every array so the tree is safe to walk. */
+/** The daemon omits empty arrays and defaults; restore them. */
 function fillPost(p: ForumPost): ForumPost {
   return {
     ...p,
+    parents: p.parents ?? [],
     labels: p.labels ?? [],
     refs: p.refs ?? [],
-    attachments: p.attachments ?? [],
-    replies: (p.replies ?? []).map(fillPost)
+    media: p.media ?? [],
+    body: p.body ?? ''
   };
-}
-
-function fillThread(t: ForumThread): ForumThread {
-  return { ...t, root: fillPost(t.root) };
 }
 
 /** Build a media URL, preserving path slashes but encoding each segment. */
@@ -538,38 +535,63 @@ export const api = {
     return r.threads ?? [];
   },
 
-  async forumThread(id: string, project?: string): Promise<ForumThread> {
-    return fillThread(await req<ForumThread>(`/api/forum/${encodeURIComponent(id)}${qs({ project })}`));
+  /** Every post, flat and newest first, plus the board's forum format. */
+  async forumPosts(project?: string): Promise<{ format: ForumFormat; posts: ForumPost[] }> {
+    const r = await req<{ format: ForumFormat; posts: ForumPost[] }>(
+      `/api/forum/posts${qs({ project })}`
+    );
+    return { format: r.format ?? 'threads', posts: (r.posts ?? []).map(fillPost) };
   },
 
-  async forumPost(
-    input: { title: string; body?: string; labels?: string[] },
+  /** Write a post: an opening post, or a reply (body opening with `@F-...`
+   *  tags, or `reply_to`). */
+  async forumCreate(
+    input: {
+      summary: string;
+      body?: string;
+      labels?: string[];
+      reply_to?: string[];
+      attachments?: Attachment[];
+    },
     project?: string
-  ): Promise<ForumThread> {
-    return fillThread(
-      await req<ForumThread>(`/api/forum${qs({ project })}`, {
+  ): Promise<ForumPost> {
+    return fillPost(
+      await req<ForumPost>(`/api/forum${qs({ project })}`, {
         method: 'POST',
         body: JSON.stringify(input)
       })
     );
   },
 
-  forumReply(
+  async forumEdit(
     id: string,
-    input: { body: string; labels?: string[] },
+    patch: { body?: string; summary?: string; label_add?: string[]; label_remove?: string[] },
     project?: string
-  ): Promise<{ ok: boolean; id: string; parent: string }> {
-    return req(`/api/forum/${encodeURIComponent(id)}/reply${qs({ project })}`, {
-      method: 'POST',
-      body: JSON.stringify(input)
-    });
+  ): Promise<ForumPost> {
+    return fillPost(
+      await req<ForumPost>(`/api/forum/${encodeURIComponent(id)}${qs({ project })}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch)
+      })
+    );
   },
 
-  forumEdit(id: string, body: string, project?: string): Promise<{ ok: boolean }> {
-    return req(`/api/forum/${encodeURIComponent(id)}${qs({ project })}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ body })
+  /** Stage a file in the board's media store (for a post's attachments). */
+  async stageMedia(file: File, project?: string): Promise<Attachment> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${getApiBase()}/api/media${qs({ project })}`, {
+      method: 'POST',
+      body: form,
+      headers: { ...authHeader() }
     });
+    if (!res.ok) throw new Error(await parseError(res));
+    return (await res.json()) as Attachment;
+  },
+
+  /** The person using this board (from version control) and their alias. */
+  whoami(project?: string): Promise<Me> {
+    return req<Me>(`/api/whoami${qs({ project })}`);
   },
 
   forumDelete(id: string, project?: string): Promise<{ ok: boolean }> {
@@ -590,7 +612,7 @@ export const api = {
         titles: params.titles ? 'true' : undefined
       })}`
     );
-    return r.posts ?? [];
+    return (r.posts ?? []).map(fillPost);
   }
 };
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fade, scale } from 'svelte/transition';
+  import { fade, scale, fly } from 'svelte/transition';
   import { browser } from '$app/environment';
   import { get } from 'svelte/store';
   import { X, Pencil, Send, Flag, Check, CheckSquare, ShieldCheck } from 'lucide-svelte';
@@ -12,6 +12,9 @@
   import ChecksSection from './ChecksSection.svelte';
   import StagedMedia from './StagedMedia.svelte';
   import WatchToggle from './WatchToggle.svelte';
+  import MdToolbar from './MdToolbar.svelte';
+  import { mdkeys, mdlists } from '$lib/md';
+  import { mention } from '$lib/mention';
   import { openLightbox } from '$lib/stores/lightbox';
   import { api, mediaUrl } from '$lib/api';
   import {
@@ -40,7 +43,7 @@
     | { type: 'comment'; ts: string; comment: Comment }
     | { type: 'event'; ts: string; event: Activity };
 
-  let { ticketId = $bindable(null) }: { ticketId: string | null } = $props();
+  let { ticketId = null, onclose }: { ticketId: string | null; onclose: () => void } = $props();
 
   const reduced = browser && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const dur = reduced ? 0 : 200;
@@ -89,14 +92,25 @@
   }
 
   // --- title ---
+  // Shown formatted (inline Markdown, references as chips); a click edits it.
   let titleDraft = $state('');
   let titleFocused = $state(false);
+  let titleEditing = $state(false);
   $effect(() => {
     if (!titleFocused && ticket) titleDraft = ticket.title;
   });
 
+  function startTitle(e?: MouseEvent) {
+    // A reference chip in the title navigates instead (RefPreview handles it).
+    if ((e?.target as Element | null)?.closest?.('.wref')) return;
+    if (ticket) titleDraft = ticket.title;
+    titleFocused = true;
+    titleEditing = true;
+  }
+
   async function saveTitle() {
     titleFocused = false;
+    titleEditing = false;
     // The title is single-line semantically; collapse any pasted newlines.
     const v = titleDraft.replace(/\s*\n\s*/g, ' ').trim();
     if (ticket && v && v !== ticket.title) await patch({ title: v });
@@ -146,6 +160,7 @@
     saveError = null;
     commentDraft = '';
     titleFocused = false;
+    titleEditing = false;
     hasDraft = ticketId ? readDraft(ticketId) !== null : false;
   });
 
@@ -243,12 +258,12 @@
   //
   // What was just pasted is previewed right where it was pasted (under that
   // field), so it can be inspected in place without scrolling to Attachments.
-  let pasted = $state<{ at: 'title' | 'body'; files: File[]; paths: string[] }>({
+  let pasted = $state<{ at: 'title' | 'body' | 'comment'; files: File[]; paths: string[] }>({
     at: 'body',
     files: [],
     paths: []
   });
-  async function onPasteAttach(e: ClipboardEvent, at: 'title' | 'body' = 'body') {
+  async function onPasteAttach(e: ClipboardEvent, at: 'title' | 'body' | 'comment' = 'body') {
     if (!ticket || readOnly) return;
     const files = filesFromClipboard(e.clipboardData);
     if (files.length) {
@@ -274,7 +289,17 @@
   function close() {
     // Closing with the editor open stashes the draft (it is NOT saved).
     if (editingBody) stashBody();
-    ticketId = null;
+    onclose();
+  }
+
+  let bodyArea = $state<HTMLTextAreaElement | null>(null);
+  let commentArea = $state<HTMLTextAreaElement | null>(null);
+  /** Focus a field once it is rendered. */
+  function focusOnMount(node: HTMLTextAreaElement) {
+    requestAnimationFrame(() => {
+      node.focus();
+      node.setSelectionRange(node.value.length, node.value.length);
+    });
   }
   function onKey(e: KeyboardEvent) {
     if (e.key !== 'Escape' || !ticketId) return;
@@ -306,7 +331,6 @@
       <button class="close" aria-label="Close" onclick={close}><X size={18} /></button>
 
       <div class="pad">
-       <div class="main">
         <div class="idrow">
           {#if currentList}<span class="listtag">{currentList.name}</span>{/if}
           <span class="tid">{ticket.id}</span>
@@ -317,21 +341,44 @@
           {#if readOnly}<span class="ro">read-only</span>{/if}
         </div>
 
-        <!-- title (auto-grows and wraps; Enter commits) -->
+        <!-- title: formatted; click to edit (auto-grows and wraps; Enter commits) -->
         {#if readOnly}
-          <h2 class="title-ro">{ticket.title}</h2>
+          <h2 class="title-ro"><Markdown source={ticket.title} inline /></h2>
+        {:else if !titleEditing}
+          <div
+            class="title-view"
+            role="button"
+            tabindex="0"
+            title="Edit the title (Ctrl+B / I / U format it, @ references)"
+            onclick={startTitle}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                startTitle();
+              }
+            }}
+          >
+            <Markdown source={ticket.title} inline />
+          </div>
         {:else}
           <textarea
             class="title-input"
             rows="1"
             bind:value={titleDraft}
             use:autosize={titleDraft}
+            use:focusOnMount
+            use:mention
+            use:mdkeys
             onpaste={(e) => onPasteAttach(e, 'title')}
             onfocus={() => (titleFocused = true)}
             onblur={saveTitle}
             onkeydown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
+                e.currentTarget.blur();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                if (ticket) titleDraft = ticket.title;
                 e.currentTarget.blur();
               }
             }}
@@ -426,19 +473,36 @@
             {/if}
           </div>
           {#if editingBody && !readOnly}
-            <!-- svelte-ignore a11y_autofocus -->
-            <textarea
-              class="body-edit wp-scroll"
-              autofocus
-              bind:value={bodyDraft}
-              use:autosize={bodyDraft}
-              onpaste={(e) => onPasteAttach(e, 'body')}
-              placeholder="Markdown supported…"
-            ></textarea>
+            <div class="editor">
+              <MdToolbar target={bodyArea} />
+              <textarea
+                class="body-edit wp-scroll"
+                bind:this={bodyArea}
+                bind:value={bodyDraft}
+                use:autosize={bodyDraft}
+                use:focusOnMount
+                use:mention
+                use:mdkeys
+                use:mdlists
+                onpaste={(e) => onPasteAttach(e, 'body')}
+                placeholder="Markdown supported - @ to reference a ticket, post or person…"
+              ></textarea>
+            </div>
           {:else if ticket.body}
-            <button class="body-view" onclick={() => !readOnly && startBody()}>
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div
+              class="body-view"
+              role="button"
+              tabindex="0"
+              onclick={(e) => {
+                const t = e.target as Element;
+                // Links and reference chips keep working inside the description.
+                if (t.closest('a, .wref, input, img')) return;
+                if (!readOnly) startBody();
+              }}
+            >
               <Markdown source={ticket.body} />
-            </button>
+            </div>
           {:else if !readOnly}
             <button class="body-empty" onclick={startBody}>
               {hasDraft ? 'Resume your description draft…' : 'Add a more detailed description…'}
@@ -490,25 +554,45 @@
             >Created {formatDate(ticket.created)} · Updated {formatDate(ticket.updated)}</span
           >
         </footer>
-       </div>
+      </div>
+    </div>
 
-       <!-- activity: comments + events, interleaved, newest first -->
-       <aside class="side">
+    <!-- activity: comments + events, newest first - a section of its own beside
+         the ticket, scrolling on its own -->
+    <aside
+      class="side wp-noscrollbar"
+      transition:fly={{ x: 18, duration: dur, opacity: 0 }}
+      aria-label="Activity"
+    >
          <div class="side-head">Activity</div>
          {#if !readOnly}
            <div class="c-add">
              <textarea
                class="c-input"
                rows="2"
-               placeholder="Write a comment…"
+               placeholder="Write a comment… (@ to reference, Ctrl+Enter sends)"
+               bind:this={commentArea}
                bind:value={commentDraft}
+               use:autosize={commentDraft}
+               use:mention
+               use:mdkeys
+               use:mdlists
+               onpaste={(e) => onPasteAttach(e, 'comment')}
                onkeydown={(e) => {
                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) addComment();
                }}
              ></textarea>
-             <button class="c-send" aria-label="Send comment" onclick={addComment}>
-               <Send size={15} />
-             </button>
+             <div class="c-tools">
+               <MdToolbar target={commentArea} />
+               <button class="c-send" aria-label="Send comment" title="Send (Ctrl+Enter)" onclick={addComment}>
+                 <Send size={14} />
+               </button>
+             </div>
+             {#if pasted.at === 'comment' && (pasted.files.length || pasted.paths.length)}
+               <div class="pasted"><span class="pasted-cap">Attached to the ticket</span>
+                 <StagedMedia files={pasted.files} paths={pasted.paths} />
+               </div>
+             {/if}
            </div>
          {/if}
          <div class="feed">
@@ -557,9 +641,7 @@
              <span class="dim">No activity yet.</span>
            {/if}
          </div>
-       </aside>
-      </div>
-    </div>
+    </aside>
   </div>
 {/if}
 
@@ -567,9 +649,13 @@
   .scrim {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(8, 8, 8, 0.62);
+    backdrop-filter: blur(7px) saturate(0.9);
+    -webkit-backdrop-filter: blur(7px) saturate(0.9);
     z-index: 80;
   }
+  /* The ticket and its activity side by side, each scrolling on its own: a long
+     discussion never stretches the ticket, and the ticket gets the width. */
   .modal-wrap {
     position: fixed;
     inset: 0;
@@ -577,14 +663,15 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 5vh 16px;
+    gap: 20px;
+    padding: 5vh 24px;
     pointer-events: none;
-    overflow-y: auto;
   }
   .modal {
     position: relative;
     pointer-events: auto;
-    width: min(920px, 100%);
+    flex: 0 1 700px;
+    min-width: 0;
     max-height: 90vh;
     overflow-y: auto;
     background: var(--wp-card);
@@ -624,23 +711,46 @@
     color: var(--wp-text);
   }
   .pad {
-    padding: 20px 24px 22px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
-    gap: 24px;
-  }
-  .main {
+    padding: 22px 26px 22px;
     display: flex;
     flex-direction: column;
     gap: 18px;
     min-width: 0;
   }
+  /* Activity: no panel of its own - comments float as cards on the backdrop. */
   .side {
+    pointer-events: auto;
+    flex: 0 1 470px;
+    min-width: 0;
+    max-height: 90vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    border-left: 1px solid var(--wp-border);
-    padding-left: 20px;
+    padding: 2px 2px 24px;
+    /* Fade the edges instead of drawing a scrollbar. */
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  }
+  .side .side-head {
+    color: rgba(255, 255, 255, 0.78);
+    padding: 4px 2px 0;
+  }
+  @media (max-width: 1080px) {
+    .modal-wrap {
+      flex-direction: column;
+      align-items: center;
+      overflow-y: auto;
+      pointer-events: auto;
+    }
+    .modal,
+    .side {
+      flex: none;
+      width: min(700px, 100%);
+      max-height: none;
+      overflow: visible;
+      mask-image: none;
+    }
   }
   .pasted {
     display: flex;
@@ -651,17 +761,19 @@
     font-size: 11px;
     color: var(--wp-text-subtle);
   }
-  /* Phones: full-screen sheet, safe-area aware. */
+  /* Phones: full-width sheet, safe-area aware. */
   @media (max-width: 700px) {
     .modal-wrap {
-      padding: 0;
+      padding: 0 0 24px;
+      gap: 12px;
     }
     .modal {
       width: 100%;
-      max-height: none;
-      height: 100dvh;
       border-radius: 0;
       border: none;
+    }
+    .side {
+      padding: 0 10px 24px;
     }
     .cover,
     .cover img {
@@ -673,17 +785,6 @@
     }
     .close {
       top: max(10px, env(safe-area-inset-top));
-    }
-  }
-  @media (max-width: 720px) {
-    .pad {
-      grid-template-columns: 1fr;
-    }
-    .side {
-      border-left: none;
-      border-top: 1px solid var(--wp-border);
-      padding-left: 0;
-      padding-top: 16px;
     }
   }
   .side-head {
@@ -703,6 +804,9 @@
     display: flex;
     align-items: flex-start;
     gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--wp-r-md);
+    background: color-mix(in srgb, var(--wp-card) 82%, transparent);
   }
   .e-text {
     font-size: 12.5px;
@@ -777,11 +881,24 @@
     background: var(--wp-canvas);
     border-color: var(--wp-border-strong);
   }
-  .title-ro {
+  .title-ro,
+  .title-view {
     font-size: 22px;
     font-weight: 600;
+    letter-spacing: -0.01em;
     line-height: 1.3;
     overflow-wrap: anywhere;
+  }
+  .title-view {
+    font-family: var(--wp-font-display);
+    padding: 6px 8px;
+    margin: -6px -8px;
+    border: 1px solid transparent;
+    border-radius: var(--wp-r-sm);
+    cursor: text;
+  }
+  .title-view:hover {
+    border-color: var(--wp-border);
   }
   .edit-actions {
     display: inline-flex;
@@ -889,12 +1006,24 @@
   .linkbtn:hover {
     color: var(--wp-accent);
   }
+  .editor {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--wp-r-md);
+    border: 1px solid var(--wp-border);
+    background: var(--wp-canvas);
+    overflow: hidden;
+  }
+  .editor :global(.mdbar) {
+    border-bottom: 1px solid var(--wp-border);
+    background: var(--wp-surface);
+  }
   .body-edit {
     min-height: 150px;
     resize: vertical;
     padding: 12px;
-    border-radius: var(--wp-r-md);
-    border: 1px solid var(--wp-border);
+    border: none;
+    outline: none;
     background: var(--wp-canvas);
     color: var(--wp-text);
     font-family: var(--wp-font-mono);
@@ -902,6 +1031,7 @@
     line-height: 1.5;
   }
   .body-view {
+    display: block;
     text-align: left;
     background: none;
     border: 1px solid transparent;
@@ -950,8 +1080,18 @@
   .comment {
     border: 1px solid var(--wp-border);
     border-radius: var(--wp-r-md);
-    padding: 8px 10px;
-    background: var(--wp-surface);
+    padding: 10px 12px;
+    background: var(--wp-card);
+    box-shadow: var(--wp-shadow);
+  }
+  /* Wide content (tables, code) scrolls inside its comment, never squeezes. */
+  .c-body :global(table) {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .c-body :global(pre) {
+    max-width: 100%;
   }
   .c-head {
     display: flex;
@@ -992,25 +1132,37 @@
   }
   .c-add {
     display: flex;
-    gap: 8px;
-    align-items: flex-end;
-  }
-  .c-input {
-    flex: 1;
-    resize: vertical;
-    padding: 8px 10px;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
     border-radius: var(--wp-r-md);
     border: 1px solid var(--wp-border);
-    background: var(--wp-canvas);
+    background: var(--wp-card);
+    box-shadow: var(--wp-shadow);
+  }
+  .c-input {
+    resize: none;
+    min-height: 44px;
+    padding: 4px 4px;
+    border: none;
+    outline: none;
+    background: transparent;
     color: var(--wp-text);
     font-size: 13px;
+    line-height: 1.5;
+  }
+  .c-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
   }
   .c-send {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: 36px;
-    width: 36px;
+    height: 30px;
+    width: 30px;
     flex: none;
     border-radius: var(--wp-r-sm);
     border: none;

@@ -20,7 +20,9 @@ Rules that output can't teach you:
 1. **Identity first.** Writes are refused until you pick one: `wipe identity list`,
    then `wipe identity use <id> --agent` (or `export WIPE_AGENT=<id>`, or
    `--agentid <id>` per command). If no identity fits you, ask your user - never
-   write as a human.
+   write as a human. Agents belong to the git account of the person you work
+   for: if another person's agent already holds your name, wipe gives you your
+   own (`claude02`) - use the id it reports.
 2. **Multi-line text goes through a file or stdin**: `--body-file f.md`,
    `-m -` / `--body -` with stdin. Quoted multi-line arguments can be cut.
 3. **Never edit files under `.wipe/`** - use the CLI.
@@ -54,5 +56,14 @@ wipe watch review --on commented,moved     # stream one line per change (backgro
 ```
 
 Your own changes never trigger a watch. Exit 124 = timed out with no change.
-Share durable knowledge (decisions, gotchas) with `wipe forum post`; load the
-pinned essentials with `wipe forum digest`.
+8. **`@T-02A` `@F-01C` `@claude` reference anything** (ticket, post, person)
+   in any text; a mention reaches that person like an assignment.
+
+Forum: every post has an id (`F-01A`) and a **required one-line summary**
+(`-s`). A post replies to the posts its body *opens* with tags for:
+
+```bash
+wipe forum post -s "Foam uses a persistent buffer" -b "why... see @T-02A"
+wipe forum reply F-01A -s "Cap it at 1024²" -b "9 MB on Quest"
+wipe forum digest     # pinned essentials
+```

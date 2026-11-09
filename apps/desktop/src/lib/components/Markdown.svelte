@@ -1,13 +1,36 @@
 <script lang="ts">
-  import { renderMarkdown } from '$lib/utils';
-  let { source }: { source: string } = $props();
-  let html = $derived(renderMarkdown(source));
+  // Markdown (or, `inline`, one line of it: titles, checklist items) with `@`
+  // references as chips - re-rendered when what they point at changes.
+  import { renderMarkdown, renderInline, refsVersion } from '$lib/refs';
+  let { source, inline = false }: { source: string; inline?: boolean } = $props();
+  let html = $derived.by(() => {
+    void $refsVersion;
+    return inline ? renderInline(source) : renderMarkdown(source);
+  });
 </script>
 
-<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-<div class="md">{@html html}</div>
+{#if inline}
+  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+  <span class="mdi">{@html html}</span>
+{:else}
+  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+  <div class="md">{@html html}</div>
+{/if}
 
 <style>
+  .mdi :global(code) {
+    font-family: var(--wp-font-mono);
+    font-size: 0.88em;
+    background: var(--wp-surface);
+    border: 1px solid var(--wp-border);
+    border-radius: var(--wp-r-sm);
+    padding: 0 4px;
+  }
+  .mdi :global(a:not(.wref)) {
+    color: var(--wp-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
   .md {
     font-size: 14px;
     line-height: 1.55;
@@ -42,7 +65,7 @@
   .md :global(li) {
     margin: 0.2em 0;
   }
-  .md :global(a) {
+  .md :global(a:not(.wref)) {
     color: var(--wp-accent);
     text-decoration: underline;
     text-underline-offset: 2px;

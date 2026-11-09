@@ -1,5 +1,3 @@
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
 import type { LabelDef } from './types';
 
 /** The fixed, harmonious label/tag color set from DESIGN.md §4. */
@@ -148,21 +146,6 @@ export function formatBytes(n: number): string {
     i++;
   }
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
-}
-
-marked.setOptions({ gfm: true, breaks: true });
-
-/**
- * Render markdown to HTML (synchronous) and sanitize it. Ticket/comment/forum
- * bodies are authored by any human or agent and injected via `{@html}`, so raw
- * HTML (e.g. `<img onerror=…>`, `<script>`, `javascript:` links) must be stripped
- * before it reaches the DOM. Sanitizing happens in the browser (the only place
- * user content renders); static prerender has no DOM and no user content.
- */
-export function renderMarkdown(src: string): string {
-  if (!src) return '';
-  const html = marked.parse(src, { async: false }) as string;
-  return typeof window === 'undefined' ? html : DOMPurify.sanitize(html);
 }
 
 /** Categorize an attachment MIME for rendering (DESIGN.md §9). */

@@ -140,6 +140,9 @@ fn router(state: AppState) -> Router {
         .route("/api/local-file", get(api::local_file))
         .route("/api/forum", get(api::forum_list).post(api::forum_create))
         .route("/api/forum/search", get(api::forum_search))
+        .route("/api/forum/posts", get(api::forum_posts))
+        .route("/api/media", post(api::stage_media))
+        .route("/api/whoami", get(api::whoami))
         .route(
             "/api/forum/{id}",
             get(api::forum_thread)

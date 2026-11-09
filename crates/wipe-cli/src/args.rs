@@ -1071,13 +1071,15 @@ pub enum MediaCmd {
 /// `wipe forum ...`
 #[derive(Debug, Subcommand)]
 pub enum ForumCmd {
-    /// Open a new thread with a root post.
+    /// Write a post: a new thread, or a reply when its body opens with post
+    /// tags (`@F-01A ...`) or `--reply-to` names posts.
     Post(ForumPostArgs),
-    /// Reply to a post at any depth (parent is a post ID like F-1 or F-1.2).
+    /// Reply to a post (same as `post` with the body opening `@<ID>`).
     Reply(ForumReplyArgs),
-    /// Show a thread (or a subtree) as an indented tree.
+    /// Show a post and the replies under it (a thread's opening post: the whole
+    /// thread) as an indented tree.
     Show {
-        /// Thread or post ID (e.g. F-1 or F-1.2).
+        /// Post ID (e.g. F-01A).
         id: String,
         /// Limit how deep to render (relative to the shown post).
         #[arg(long)]
@@ -1100,11 +1102,15 @@ pub enum ForumCmd {
     },
     /// Search posts by regex pattern and/or filters.
     Search(ForumSearchArgs),
-    /// Edit a post's body and/or reattribute it (at least one is required).
+    /// Edit a post's summary and/or body, or reattribute it (at least one).
     Edit {
         /// Post ID.
         id: String,
-        /// New body (Markdown allowed). `-` reads it from stdin.
+        /// New one-sentence summary.
+        #[arg(long, short = 's', visible_alias = "title")]
+        summary: Option<String>,
+        /// New body (Markdown allowed). `-` reads it from stdin. Its opening
+        /// post tags decide what the post replies to.
         #[arg(long, short, allow_hyphen_values = true)]
         body: Option<String>,
         /// Read the new body from a file (`-` = stdin).
@@ -1115,11 +1121,12 @@ pub enum ForumCmd {
         #[arg(long)]
         author: Option<String>,
     },
-    /// Delete a post and its entire subtree (root deletes the whole thread).
+    /// Delete a post. Replies to it stay (on boards still on the old thread
+    /// forum, a post takes its replies with it).
     Delete {
-        /// Post or thread ID.
+        /// Post ID.
         id: String,
-        /// Required to actually delete (subtree deletion is irreversible).
+        /// Required to actually delete (irreversible).
         #[arg(long)]
         yes: bool,
     },
@@ -1146,9 +1153,13 @@ pub enum ForumCmd {
 /// `wipe forum post`
 #[derive(Debug, Args)]
 pub struct ForumPostArgs {
-    /// Thread title (headline).
-    #[arg(long, short)]
-    pub title: String,
+    /// One sentence stating the post's core point - its header line, and the
+    /// thread title of a new thread. Required.
+    #[arg(long, short = 's', visible_alias = "title", short_alias = 't')]
+    pub summary: String,
+    /// Reply to this post (repeatable): its tag goes in front of the body.
+    #[arg(long = "reply-to", value_name = "POST")]
+    pub reply_to: Vec<String>,
     /// Message body (Markdown allowed). `-` reads it from stdin.
     #[arg(long, short, allow_hyphen_values = true)]
     pub body: Option<String>,
@@ -1172,8 +1183,11 @@ pub struct ForumPostArgs {
 /// `wipe forum reply`
 #[derive(Debug, Args)]
 pub struct ForumReplyArgs {
-    /// Parent post ID (e.g. F-1 or F-1.2).
+    /// The post replied to (e.g. F-01A).
     pub id: String,
+    /// One sentence stating the reply's core point. Required.
+    #[arg(long, short = 's', visible_alias = "title", short_alias = 't')]
+    pub summary: String,
     /// Reply body (Markdown allowed). `-` reads it from stdin.
     #[arg(long, short, allow_hyphen_values = true)]
     pub body: Option<String>,
@@ -1205,13 +1219,13 @@ pub struct ForumSearchArgs {
     /// Require this label (repeatable; all must be present).
     #[arg(long = "label", value_name = "LABEL")]
     pub labels: Vec<String>,
-    /// Restrict to a thread or subtree by ID (e.g. F-1 or F-1.2).
+    /// Restrict to a thread, or a post and its direct replies (e.g. F-01A).
     #[arg(long)]
     pub scope: Option<String>,
-    /// Only match posts at this depth or shallower (root = 0).
+    /// Only match posts at this depth or shallower (opening post = 0).
     #[arg(long)]
     pub depth: Option<usize>,
-    /// Match only thread titles (root posts).
+    /// Match only thread titles (opening posts' summaries).
     #[arg(long)]
     pub titles: bool,
     /// Cap the number of results (`0` = no cap).

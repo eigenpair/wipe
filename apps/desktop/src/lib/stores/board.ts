@@ -5,8 +5,11 @@ import { notifyBoardChanges, notifyForum, useWatchesOf } from '$lib/stores/notif
 import type {
   Board,
   Definitions,
+  ForumFormat,
+  ForumPost,
   Health,
   Identity,
+  Me,
   Project,
   Ticket,
   TicketPatch,
@@ -73,6 +76,23 @@ export type ChangeKind = 'new' | 'moved' | 'edited';
 export const recentlyChanged = writable<Map<string, ChangeKind>>(new Map());
 /** True when the forum has new posts the viewer hasn't looked at yet. */
 export const forumUnread = writable<boolean>(false);
+
+/** Every forum post, flat (newest first) - threads, previews and `@`
+ *  suggestions all come from this one list. */
+export const forumPosts = writable<ForumPost[]>([]);
+/** The board's forum format (`threads` until the board is converted). */
+export const forumFormat = writable<ForumFormat>('posts');
+/** Post id (and old id) -> post. */
+export const postIndex = derived(forumPosts, ($p) => {
+  const m = new Map<string, ForumPost>();
+  for (const p of $p) {
+    m.set(p.id, p);
+    if (p.legacy_id) m.set(p.legacy_id, p);
+  }
+  return m;
+});
+/** The person using this board (their git account) and their alias. */
+export const me = writable<Me | null>(null);
 
 const changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Ticket ids the local user just acted on; their next diff is NOT flashed (the
@@ -269,7 +289,7 @@ export async function loadBoard(opts: { silent?: boolean } = {}): Promise<void> 
       // switching boards or returning from history (which would light up every card).
       if (prev && boardProject === proj) {
         markChanges(prev, next);
-        notifyBoardChanges(prev, next, selfActed);
+        notifyBoardChanges(prev, next, selfActed, get(me)?.id ?? null);
       }
       board.set(next);
       if (res.etag) appliedEtag.set(proj ?? '', res.etag);
@@ -296,6 +316,36 @@ export async function loadDefinitions(): Promise<void> {
     setIfChanged(definitions, get(definitions), await api.definitions(project()));
   } catch {
     /* definitions are non-critical */
+  }
+}
+
+/** Reload the forum's posts (cheap: the daemon serves them from its index). */
+export async function loadForum(): Promise<void> {
+  const proj = project();
+  try {
+    const r = await api.forumPosts(proj);
+    // A response that resolved after a project switch belongs to the old board.
+    if (project() !== proj) return;
+    if (get(forumFormat) !== r.format) forumFormat.set(r.format);
+    const prev = get(forumPosts);
+    const same =
+      prev.length === r.posts.length &&
+      prev.every((p, i) => p.id === r.posts[i].id && p.edited === r.posts[i].edited && p.body === r.posts[i].body && p.parents.length === r.posts[i].parents.length);
+    if (!same) forumPosts.set(r.posts);
+    notifyForum(proj ?? null, r.posts, get(me)?.id ?? null);
+    const total = r.posts.length;
+    if (lastForumPosts >= 0 && total > lastForumPosts && !onForumView) forumUnread.set(true);
+    lastForumPosts = total;
+  } catch {
+    /* the forum is best-effort next to the board */
+  }
+}
+
+export async function loadMe(): Promise<void> {
+  try {
+    me.set(await api.whoami(project()));
+  } catch {
+    /* without it, mentions of you just aren't highlighted */
   }
 }
 
@@ -534,7 +584,8 @@ export async function bootstrap(): Promise<void> {
     /* styling defaults are non-critical */
   }
   await loadProjects();
-  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities()]);
+  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities(), loadMe()]);
+  await loadForum();
   startLiveUpdates();
   startPolling();
 }
@@ -548,7 +599,9 @@ export async function reloadProject(): Promise<void> {
   // the new board (which would flash every card). The old board stays on screen
   // until the new one loads, so there's no loading flash on switch.
   boardProject = null;
-  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities()]);
+  forumPosts.set([]);
+  await Promise.all([loadBoard(), loadDefinitions(), loadIdentities(), loadMe()]);
+  await loadForum();
   startPolling();
 }
 
@@ -560,6 +613,7 @@ export function startLiveUpdates(): void {
     void loadBoard({ silent: true });
     void loadDefinitions();
     void loadIdentities();
+    void loadForum();
   });
 }
 
@@ -586,7 +640,7 @@ export function startPolling(): void {
     void loadBoard({ silent: true });
     // Check the forum a little less often (every ~2s) for the unread indicator.
     forumTick = (forumTick + 1) % 4;
-    if (forumTick === 0) void refreshForumIndicator();
+    if (forumTick === 0) void loadForum();
   }, 500);
 }
 
@@ -608,20 +662,4 @@ export function setForumView(active: boolean): void {
 export function resetForumIndicator(): void {
   lastForumPosts = -1;
   forumUnread.set(false);
-}
-
-async function refreshForumIndicator(): Promise<void> {
-  const proj = project();
-  try {
-    const threads = await api.forumThreads(proj);
-    // Drop a response that resolved after a project switch, or it would poison the
-    // new project's baseline with the old project's post count (false unread dot).
-    if (project() !== proj) return;
-    notifyForum(proj ?? null, threads);
-    const total = threads.reduce((n, t) => n + (t.posts ?? 0), 0);
-    if (lastForumPosts >= 0 && total > lastForumPosts && !onForumView) forumUnread.set(true);
-    lastForumPosts = total;
-  } catch {
-    /* forum indicator is best-effort */
-  }
 }

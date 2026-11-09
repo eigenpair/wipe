@@ -17,6 +17,11 @@
 //! env var, so it is per-process, inherited by child processes, and cannot be
 //! overwritten by another agent. Sessions are keyed per terminal tab / agent
 //! session (see [`session_key`]), so binding one never leaks into another.
+//!
+//! Agents belong to the person whose agent they are - the git account of the
+//! repository they work in. An agent name another person's agent already holds
+//! resolves to this account's own numbered variant (`claude02`), so two people's
+//! agents never write as each other ([`wipe_core::ops::claim_agent`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -60,10 +65,37 @@ pub fn resolve_opt(explicit: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(override_id)
-        .or_else(agent_env)
-        .or_else(active)
+        .or_else(|| {
+            override_id()
+                .or_else(agent_env)
+                .or_else(active)
+                .map(own_agent)
+        })
         .or_else(|| env_nonempty("WIPE_AUTHOR"))
+}
+
+/// The git account (email) of the person working in this repository: whose
+/// agents act here. Looked up once per process.
+pub fn account() -> Option<String> {
+    static ACCOUNT: OnceLock<Option<String>> = OnceLock::new();
+    ACCOUNT
+        .get_or_init(|| {
+            let store = Store::discover(".").ok()?;
+            ops::account(&store).map(|(_, key)| key)
+        })
+        .clone()
+}
+
+/// An agent name as this account's own agent: another person's `claude` is
+/// this account's `claude02` (when it has one). People and unknown names stay.
+fn own_agent(id: String) -> String {
+    if id.contains('@') || id.contains('<') {
+        return id;
+    }
+    match Store::discover(".") {
+        Ok(store) => ops::agent_for(&store, &id, account().as_deref()),
+        Err(_) => id,
+    }
 }
 
 /// Resolve the acting identity or fail with guidance on choosing one.
@@ -442,31 +474,18 @@ pub fn export_hint(author: &str) -> String {
     }
 }
 
-/// Best-effort: ensure an agent identity exists in the current board's registry so
-/// it appears (as an agent) in listings. Used when `--agentid` / `$WIPE_AGENT`
-/// names a new agent on a write.
-///
-/// Insert-only: if the id already exists we do nothing - never rewriting the file
-/// and never clobbering a display name set earlier via `wipe identity use --name`.
+/// Best-effort: make sure an agent named by `--agentid` / `$WIPE_AGENT` is
+/// registered on the current board as this account's agent, so it shows up in
+/// listings (see [`wipe_core::ops::claim_agent`]): an unknown name is created,
+/// an unowned one claimed, another person's resolved to this account's own
+/// variant. Never touches a display name set earlier.
 pub fn ensure_registered(id: &str, name: Option<&str>, agent: bool) {
     let id = id.trim();
-    if id.is_empty() {
+    if id.is_empty() || !agent || id.contains('@') {
         return;
     }
     if let Ok(store) = Store::discover(".") {
-        if store
-            .load_identities()
-            .map(|list| list.iter().any(|i| i.id == id))
-            .unwrap_or(false)
-        {
-            return; // already known - leave it (and the file) untouched
-        }
-        let kind = if agent {
-            IdentityKind::Agent
-        } else {
-            IdentityKind::Human
-        };
-        let _ = ops::upsert_identity(&store, id, name.unwrap_or(id), Some(kind));
+        let _ = ops::claim_agent(&store, id, name, account().as_deref());
     }
 }
 

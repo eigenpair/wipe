@@ -7,8 +7,11 @@
     WifiOff,
     LayoutGrid,
     MessagesSquare,
-    Hash
+    Hash,
+    Search
   } from 'lucide-svelte';
+  import { page } from '$app/state';
+  import { tick } from 'svelte';
   import {
     board,
     boardError,
@@ -18,6 +21,7 @@
     readOnly,
     loading,
     forumUnread,
+    loadForum,
     bootstrap,
     checkHealth,
     loadBoard,
@@ -27,6 +31,10 @@
     stopLiveUpdates
   } from '$lib/stores/board';
   import { api, getApiBase } from '$lib/api';
+  import { parseRoute, go, openTicket as openTicketRoute, openPost, type Route } from '$lib/nav';
+  import RefPreview from '$lib/components/RefPreview.svelte';
+  import MentionMenu from '$lib/components/MentionMenu.svelte';
+  import ConvertDialog from '$lib/components/ConvertDialog.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import QuickJump from '$lib/components/QuickJump.svelte';
   import NotifyMenu from '$lib/components/NotifyMenu.svelte';
@@ -45,37 +53,41 @@
   import Button from '$lib/components/ui/Button.svelte';
   import type { Ticket } from '$lib/types';
 
-  let modalTicketId = $state<string | null>(null);
+  // What is open lives in the URL (lib/nav.ts): back/forward walk every jump.
+  let route = $derived(parseRoute(page.url));
+  let view = $derived(route.view);
+  let modalTicketId = $derived(route.ticket ?? null);
   let newTicketOpen = $state(false);
   let newTicketList = $state('');
   let newTicketName = $state('');
 
   let settingsOpen = $state(false);
   let historyOpen = $state(false);
-  // Restore the last-open view across a page refresh (paired with the persisted
-  // board in the store), so a reload stays where you were.
-  const VIEW_KEY = 'wipe:view';
-  function readView(): 'board' | 'forum' {
-    try {
-      return typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_KEY) === 'forum'
-        ? 'forum'
-        : 'board';
-    } catch {
-      return 'board';
-    }
-  }
-  let view = $state<'board' | 'forum'>(readView());
+
+  // The forum tab returns to where you were in the forum.
+  let lastForum: Route = { view: 'forum' };
   $effect(() => {
-    try {
-      localStorage.setItem(VIEW_KEY, view);
-    } catch {
-      /* best-effort */
-    }
+    if (route.view === 'forum') lastForum = route;
   });
 
   // Keep the store informed of whether the forum is open, so it can clear the
   // unread indicator while you're looking at it.
   $effect(() => setForumView(view === 'forum'));
+
+  // `/?at=T-023`: scroll that card into view and highlight it.
+  $effect(() => {
+    const at = route.at;
+    if (!at || !$board) return;
+    void tick().then(() => {
+      const el = document.querySelector<HTMLElement>(`[data-ticket-id="${CSS.escape(at)}"]`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      el.classList.remove('wp-flash');
+      void el.offsetWidth;
+      el.classList.add('wp-flash');
+      setTimeout(() => el.classList.remove('wp-flash'), 1700);
+    });
+  });
 
   onMount(() => {
     void bootstrap();
@@ -84,11 +96,12 @@
 
   async function selectProject(path: string) {
     currentProject.set(path);
+    void go({ view: route.view });
     await reloadProject();
   }
 
   function openTicket(t: Ticket) {
-    modalTicketId = t.id;
+    void openTicketRoute(t.id);
   }
   function addToList(listId: string, listName: string) {
     newTicketList = listId;
@@ -101,31 +114,23 @@
   $effect(() => {
     const r = $openRequest;
     if (!r) return;
-    if (r.ticket) {
-      view = 'board';
-      modalTicketId = r.ticket;
-      openRequest.set(null);
-    } else if (r.thread) {
-      view = 'forum';
-    }
+    openRequest.set(null);
+    if (r.ticket) void openTicketRoute(r.ticket);
+    else if (r.post ?? r.thread) void openPost((r.post ?? r.thread)!);
   });
 
-  // Legacy decimal boards (T-23) can be converted to hex ids (T-017) once.
+  // Boards from before 1.1 convert once: decimal ticket ids (T-23 -> T-017)
+  // and the thread forum (one file per post, F-3.1 -> F-00A).
+  let legacyIds = $derived(!!$board && $board.ids !== 'hex');
+  let legacyForum = $derived(!!$board && $board.forum !== 'posts');
   let translating = $state(false);
+  let convertOpen = $state(false);
   async function translateIds() {
-    if (
-      !confirm(
-        'Convert this board to the new ticket ids?' +
-          ' T-23 becomes T-017 (fixed-width hex): ticket files are renamed and every reference is rewritten.' +
-          ' Old ids keep working as aliases in search, the CLI and commit links.' +
-          ' Commit or merge other branches first, and have collaborators pull right after.'
-      )
-    )
-      return;
     translating = true;
     try {
       await api.translateIds($currentProject ?? undefined);
       await loadBoard();
+      await loadForum();
     } catch (e) {
       boardError.set(e instanceof Error ? e.message : String(e));
     } finally {
@@ -133,10 +138,13 @@
     }
   }
 
+  const mod =
+    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+
   // In the forum, Ctrl/Cmd+F jumps to the forum's own search box.
   function onKey(e: KeyboardEvent) {
     if (view !== 'forum' || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f') return;
-    const box = document.querySelector<HTMLInputElement>('.forum input[type="text"], .forum input[type="search"], .forum input');
+    const box = document.querySelector<HTMLInputElement>('.forum input.sin');
     if (box) {
       e.preventDefault();
       box.focus();
@@ -171,31 +179,38 @@
     <ProjectSwitcher onselect={selectProject} />
 
     <div class="viewtabs">
-      <button class:on={view === 'board'} onclick={() => (view = 'board')}>
+      <button class:on={view === 'board'} onclick={() => go({ view: 'board' })}>
         <LayoutGrid size={14} /> Board
       </button>
-      <button class:on={view === 'forum'} onclick={() => (view = 'forum')}>
+      <button class:on={view === 'forum'} onclick={() => go(lastForum)}>
         <MessagesSquare size={14} /> Forum
         {#if $forumUnread && view !== 'forum'}<span class="unread" title="New forum activity"></span>{/if}
       </button>
     </div>
+    <button
+      class="findhint"
+      title="Search the {view} ({mod}F)"
+      onclick={() =>
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))}
+    >
+      <Search size={13} />
+      <span class="fh-txt">Search</span>
+      <kbd>{mod}F</kbd>
+    </button>
 
     <div class="syncslot">
-      <SyncBar
-        onopen={(id) => {
-          view = 'board';
-          modalTicketId = id;
-        }}
-      />
+      <SyncBar onopen={(id) => openTicketRoute(id)} />
     </div>
 
     <div class="right">
-      {#if $board && $board.ids !== 'hex' && !$readOnly}
+      {#if (legacyIds || legacyForum) && !$readOnly}
         <button
           class="ib wide"
           disabled={translating}
-          title="This board uses the old ticket ids (T-23). Convert to the new fixed-width hex ids (T-017)."
-          onclick={translateIds}
+          title={legacyIds
+            ? 'This board uses the old ids: convert ticket ids to fixed-width hex (T-017) and the forum to one post per id (F-00A).'
+            : 'This board uses the old thread forum: convert it so every post has its own id (F-00A) and replies by @ tag.'}
+          onclick={() => (convertOpen = true)}
         >
           <Hash size={14} />
           <span>{translating ? 'Converting…' : 'New ids'}</span>
@@ -250,7 +265,7 @@
         </div>
       </div>
     {:else if view === 'forum'}
-      <div class="boardwrap"><Forum /></div>
+      <div class="boardwrap"><Forum focus={route.post ?? null} /></div>
     {:else}
 
       {#if $boardError}
@@ -272,11 +287,14 @@
 
 <Toasts />
 <QuickJump enabled={view === 'board' && !!$health && !$readOnly} onopen={openTicket} />
-<TicketModal bind:ticketId={modalTicketId} />
+<TicketModal ticketId={modalTicketId} onclose={() => go({ view: 'board' })} />
 <NewTicketDialog bind:open={newTicketOpen} listId={newTicketList} listName={newTicketName} />
 <HistoryDrawer bind:open={historyOpen} />
 <BoardSettings bind:open={settingsOpen} />
 <Lightbox />
+<RefPreview />
+<ConvertDialog bind:open={convertOpen} {legacyIds} {legacyForum} busy={translating} onconfirm={translateIds} />
+<MentionMenu />
 
 <style>
   .app {
@@ -314,6 +332,42 @@
     border-radius: var(--wp-r-md);
     background: var(--wp-surface);
     border: 1px solid var(--wp-border);
+  }
+  /* The find hint beside the view switch: Ctrl/Cmd+F searches the view. */
+  .findhint {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 6px 0 9px;
+    border-radius: var(--wp-r-md);
+    border: 1px solid var(--wp-border);
+    background: none;
+    color: var(--wp-text-subtle);
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      color var(--wp-fast) var(--wp-ease),
+      border-color var(--wp-fast) var(--wp-ease);
+  }
+  .findhint:hover {
+    color: var(--wp-text);
+    border-color: var(--wp-border-strong);
+  }
+  .findhint kbd {
+    font-family: var(--wp-font-mono);
+    font-size: 10.5px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--wp-border);
+    background: var(--wp-surface);
+    color: var(--wp-text-muted);
+  }
+  @media (max-width: 860px) {
+    .findhint .fh-txt,
+    .findhint kbd {
+      display: none;
+    }
   }
   .viewtabs button {
     position: relative;

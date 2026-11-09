@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Files;
 use crate::events::snippet;
-use crate::model::{Board, ChecklistItem, Definitions, Thread, Ticket};
+use crate::model::{Board, ChecklistItem, Definitions, ForumEntry, Thread, Ticket};
 
 /// One change on the board.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -320,6 +320,41 @@ pub fn diff(before: &Files, after: &Files) -> Vec<Change> {
             continue;
         };
         if before.get(p) == after.get(p) {
+            continue;
+        }
+        // One file per post (1.1+).
+        let (be, ae): (Option<ForumEntry>, Option<ForumEntry>) =
+            (parse(before, p), parse(after, p));
+        if be.is_some() || ae.is_some() {
+            match (be, ae) {
+                (None, Some(e)) => {
+                    let mut c = Change::new("thread", id, "posted", &e.summary);
+                    c.by.push(e.author.clone());
+                    c.detail = snippet(&e.body, 80);
+                    out.push(c);
+                }
+                (Some(e), None) => out.push(Change::new("thread", id, "deleted", &e.summary)),
+                (Some(b), Some(a)) => {
+                    let mut c = Change::new("thread", id, "edited", &a.summary);
+                    if b.summary != a.summary {
+                        c.fields.push("summary".into());
+                    }
+                    if b.body != a.body {
+                        c.fields.push("body".into());
+                    }
+                    if b.labels != a.labels {
+                        c.fields.push("labels".into());
+                    }
+                    if b.attachments != a.attachments {
+                        c.fields.push("attachments".into());
+                    }
+                    if b.author != a.author {
+                        c.fields.push("author".into());
+                    }
+                    out.push(c);
+                }
+                (None, None) => {}
+            }
             continue;
         }
         let (bt, at): (Option<Thread>, Option<Thread>) = (parse(before, p), parse(after, p));

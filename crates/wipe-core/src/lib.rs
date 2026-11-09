@@ -18,6 +18,7 @@ pub mod id;
 pub mod inbox;
 pub mod model;
 pub mod ops;
+pub mod refs;
 pub mod registry;
 pub mod search;
 pub mod store;

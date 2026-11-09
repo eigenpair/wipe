@@ -257,10 +257,13 @@ fn comments_and_authorship_corrections_are_audited() {
 
     p.json(&["forum", "post", "--title", "T", "--body", "b"]);
     assert_eq!(
-        p.json(&["forum", "edit", "F-1", "--author", "carol"])["to"],
+        p.json(&["forum", "edit", "F-001", "--author", "carol"])["to"],
         "carol"
     );
-    assert_eq!(p.json(&["forum", "show", "F-1"])["post"]["author"], "carol");
+    assert_eq!(
+        p.json(&["forum", "show", "F-001"])["posts"][0]["author"],
+        "carol"
+    );
 }
 
 #[test]
@@ -669,13 +672,15 @@ fn multi_agent_forum_collaboration() {
             "decision",
         ],
     );
-    assert_eq!(dec["id"], "F-1");
+    assert_eq!(dec["id"], "F-001");
     p.json_as(
         "architect",
         &[
             "forum",
             "reply",
-            "F-1",
+            "F-001",
+            "-s",
+            "Big ints serialize as strings",
             "-b",
             "Gotcha: big ints serialize as strings.",
             "--label",
@@ -684,11 +689,26 @@ fn multi_agent_forum_collaboration() {
     );
 
     let found = p.json_as("coder", &["forum", "search", "cents|float"]);
-    assert_eq!(found[0]["thread_id"], "F-1");
+    assert_eq!(found[0]["thread_id"], "F-001");
     p.json_as(
         "coder",
-        &["forum", "reply", "F-1", "-b", "Confirmed. Using i64 cents."],
+        &[
+            "forum",
+            "reply",
+            "f1",
+            "-s",
+            "Using i64 cents",
+            "-b",
+            "Confirmed.",
+        ],
     );
+    // A summary is required.
+    let out = p
+        .cmd(&["forum", "post", "-b", "no summary"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--summary"));
     p.json_as(
         "coder",
         &[
@@ -715,7 +735,7 @@ fn multi_agent_forum_collaboration() {
         "{authors:?}"
     );
     assert_eq!(
-        p.json_as("reviewer", &["forum", "search", "--scope", "F-1"])
+        p.json_as("reviewer", &["forum", "search", "--scope", "F-001"])
             .as_array()
             .unwrap()
             .len(),
@@ -723,8 +743,5 @@ fn multi_agent_forum_collaboration() {
     );
     // The unified search finds forum knowledge too.
     let s = p.json_as("reviewer", &["search", "cents"]);
-    assert_eq!(
-        s["posts"][0]["id"].as_str().unwrap().split('.').next(),
-        Some("F-1")
-    );
+    assert_eq!(s["posts"][0]["id"].as_str(), Some("F-001"));
 }

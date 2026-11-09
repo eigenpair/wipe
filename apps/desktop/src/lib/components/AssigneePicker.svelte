@@ -4,7 +4,7 @@
   import Popover from './ui/Popover.svelte';
   import Avatar from './Avatar.svelte';
   import { api } from '$lib/api';
-  import { identities, currentProject, loadIdentities } from '$lib/stores/board';
+  import { identities, currentProject, loadIdentities, me } from '$lib/stores/board';
   import type { Identity } from '$lib/types';
 
   let { selected, onchange }: { selected: string[]; onchange: (a: string[]) => void } = $props();
@@ -19,6 +19,28 @@
   function identityFor(id: string): Identity | undefined {
     return $identities.find((i) => i.id === id);
   }
+
+  const same = (a?: string | null, b?: string | null) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+  /** A person's identity comes from git: only its owner sets its alias. An
+   *  agent belongs to the person whose agent it is. */
+  function canEdit(i: Identity): boolean {
+    const mine = $me?.id;
+    if (!mine) return true;
+    return i.kind === 'human' ? same(i.id, mine) : !i.owner || same(i.owner, mine);
+  }
+  function ownerName(owner: string): string {
+    if (same(owner, $me?.id)) return 'yours';
+    const o = $identities.find((x) => same(x.id, owner));
+    return `${o?.display_name ?? owner}'s`;
+  }
+  // You first, then your agents, then everyone else.
+  let ordered = $derived(
+    [...$identities].sort((a, b) => {
+      const rank = (i: Identity) =>
+        same(i.id, $me?.id) ? 0 : i.kind === 'agent' && same(i.owner, $me?.id) ? 1 : i.kind === 'human' ? 2 : 3;
+      return rank(a) - rank(b);
+    })
+  );
 
   function toggle(id: string) {
     const next = selected.includes(id) ? selected.filter((a) => a !== id) : [...selected, id];
@@ -60,9 +82,11 @@
     if (!id) return;
     error = null;
     try {
-      await api.putIdentity(id, name, 'agent', get(currentProject) ?? undefined);
+      // The id may come back as your own variant (`claude02`) when another
+      // person's agent already has it.
+      const made = await api.putIdentity(id, name, 'agent', get(currentProject) ?? undefined);
       await loadIdentities();
-      if (!selected.includes(id)) onchange([...selected, id]);
+      if (!selected.includes(made.id)) onchange([...selected, made.id]);
       agentId = '';
       agentName = '';
       addingAgent = false;
@@ -90,7 +114,7 @@
       {/snippet}
       {#snippet children()}
         <div class="head">Identities</div>
-        {#each $identities as i (i.id)}
+        {#each ordered as i (i.id)}
           <div class="irow">
             <button class="pick" onclick={() => toggle(i.id)}>
               <Avatar id={i.id} identity={i} size={24} />
@@ -106,16 +130,18 @@
                 <span class="col">
                   <span class="dn">{i.display_name}</span>
                   <span class="kind">
-                    {#if i.kind === 'agent'}<Bot size={10} /> agent{:else}<User size={10} /> human{/if}
-                    · {i.id}
+                    {#if i.kind === 'agent'}<Bot size={10} />
+                      {i.owner ? `${ownerName(i.owner)} agent` : 'agent'} · {i.id}{:else}<User size={10} />
+                      {same(i.id, $me?.id) ? 'you' : 'person'} · {i.id}{/if}
                   </span>
                 </span>
               {/if}
               {#if selected.includes(i.id)}<Check size={15} />{/if}
             </button>
-            {#if editingId !== i.id}
+            {#if editingId !== i.id && canEdit(i)}
               <button
                 class="pencil"
+                title={i.kind === 'human' ? 'Your alias (your identity itself comes from git)' : 'Rename'}
                 aria-label="Rename"
                 onclick={(e) => {
                   e.stopPropagation();

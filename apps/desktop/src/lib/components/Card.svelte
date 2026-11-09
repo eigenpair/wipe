@@ -10,6 +10,7 @@
   import { Check } from 'lucide-svelte';
   import { localMarks, incomingMarks, syncMode, syncBusy, taken, takeChange, phrase } from '$lib/stores/sync';
   import { searchMatches, searchTerms, jumpTarget, highlight } from '$lib/stores/search';
+  import Markdown from './Markdown.svelte';
   import { mediaUrl } from '$lib/api';
   import { labelColorFor, priorityColor, mediaKind } from '$lib/utils';
   import type { Attachment, Ticket } from '$lib/types';
@@ -174,7 +175,7 @@
     <span class="ttext"
       >{#if typing}{typed}{:else if titleSegs}{#each titleSegs as seg, i (i)}{#if seg.hit}<mark
               >{seg.s}</mark
-            >{:else}{seg.s}{/if}{/each}{:else}{ticket.title}{/if}{#if caret}<span class="caret" aria-hidden="true"
+            >{:else}{seg.s}{/if}{/each}{:else}<Markdown source={ticket.title} inline />{/if}{#if caret}<span class="caret" aria-hidden="true"
         ></span>{/if}</span
     >
   </div>

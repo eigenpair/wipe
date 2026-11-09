@@ -2,8 +2,9 @@
 //!
 //! The inbox answers "what changed that I care about, and since when?" without
 //! blocking. It scans ticket comments and activity plus forum posts, keeps only
-//! events by *other* actors on objects the identity is assigned to, authored, or
-//! subscribed to, and returns them newest-first. `--unread` advances a per-user
+//! events by *other* actors on objects the identity is assigned to, mentioned in
+//! (`@claude`, which counts like an assignment), authored, or subscribed to, and
+//! returns them newest-first. `--unread` advances a per-user
 //! read cursor kept under the gitignored cache, so it never dirties the repo.
 
 use std::collections::{BTreeMap, HashSet};
@@ -30,8 +31,8 @@ pub struct InboxEvent {
     pub actor: String,
     /// Short detail: a comment/post snippet, `+bug`, the target list of a move...
     pub detail: String,
-    /// Why it reached your inbox: `assigned`, `authored`, `subscribed`, or
-    /// `board` (only with the board-wide view, `inbox --all`).
+    /// Why it reached your inbox: `assigned`, `mentioned`, `authored`,
+    /// `subscribed`, or `board` (only with the board-wide view, `inbox --all`).
     pub reason: String,
 }
 
@@ -86,6 +87,21 @@ pub fn subscriptions_of(store: &Store, identity: &str) -> Result<Vec<String>> {
 
 use crate::events::snippet;
 
+/// Whether `text` mentions `identity` (`@claude`; a person by their email,
+/// `@ada@example.com`, also when `identity` is written `Ada <ada@example.com>`).
+pub fn mentions(text: &str, identity: &str) -> bool {
+    if !text.contains('@') {
+        return false;
+    }
+    let key = identity
+        .rsplit_once('<')
+        .map(|(_, e)| e.trim_end_matches('>').trim())
+        .unwrap_or(identity.trim());
+    crate::refs::mentions(text)
+        .iter()
+        .any(|m| m.eq_ignore_ascii_case(key) || m.eq_ignore_ascii_case(identity.trim()))
+}
+
 /// Compute the inbox for `identity`: events strictly after `since` on objects it
 /// is assigned to, authored, or subscribed to - excluding the identity's own
 /// actions. Sorted newest-first.
@@ -123,6 +139,7 @@ pub fn inbox_with(
             continue;
         };
         let assigned = t.assignees.iter().any(|a| a == identity);
+        let mentioned = mentions(&t.title, identity) || mentions(&t.body, identity);
         let authored = t
             .activity
             .iter()
@@ -130,7 +147,21 @@ pub fn inbox_with(
         let list_ref = ticket_list.get(&id).map(|l| format!("list:{l}"));
         let subbed =
             all || sub_set.contains(&id) || list_ref.map(|r| sub_set.contains(&r)).unwrap_or(false);
-        if !(assigned || authored || subbed) {
+        // A comment that mentions you reaches you on any ticket.
+        for c in &t.comments {
+            if c.created > since && c.author != identity && mentions(&c.body, identity) {
+                events.push(InboxEvent {
+                    ts: c.created,
+                    kind: "mentioned".into(),
+                    object: id.clone(),
+                    title: t.title.clone(),
+                    actor: c.author.clone(),
+                    detail: snippet(&c.body, 160),
+                    reason: "mentioned".into(),
+                });
+            }
+        }
+        if !(assigned || mentioned || authored || subbed) {
             continue;
         }
         let explicitly_subbed = sub_set.contains("board:*")
@@ -140,6 +171,8 @@ pub fn inbox_with(
                 .is_some_and(|l| sub_set.contains(&format!("list:{l}")));
         let reason = if assigned {
             "assigned"
+        } else if mentioned {
+            "mentioned"
         } else if authored {
             "authored"
         } else if explicitly_subbed {
@@ -149,7 +182,7 @@ pub fn inbox_with(
         };
 
         for c in &t.comments {
-            if c.created > since && c.author != identity {
+            if c.created > since && c.author != identity && !mentions(&c.body, identity) {
                 events.push(InboxEvent {
                     ts: c.created,
                     kind: "commented".into(),
@@ -179,13 +212,25 @@ pub fn inbox_with(
 
     // Forum posts on subscribed threads (or all, via forum:* / board:*).
     for p in forum::index(store)? {
+        if p.created > since && p.author != identity && mentions(&p.body, identity) {
+            events.push(InboxEvent {
+                ts: p.created,
+                kind: "mentioned".into(),
+                object: p.id.clone(),
+                title: p.summary.clone(),
+                actor: p.author.clone(),
+                detail: snippet(&p.body, 160),
+                reason: "mentioned".into(),
+            });
+            continue;
+        }
         let relevant = all_forum || sub_set.contains(&format!("forum:{}", p.thread_id));
         if relevant && p.created > since && p.author != identity {
             events.push(InboxEvent {
                 ts: p.created,
                 kind: "posted".into(),
                 object: p.id.clone(),
-                title: p.thread_title.clone(),
+                title: p.summary.clone(),
                 actor: p.author.clone(),
                 detail: snippet(&p.body, 160),
                 reason: if sub_set.contains("board:*")

@@ -1,5 +1,11 @@
-//! One-time translation of a legacy board's decimal ticket IDs (`T-23`) to the
-//! hex format (`T-017`).
+//! One-time translation of a legacy board to the current id formats: decimal
+//! ticket IDs (`T-23`) become hex (`T-017`), and a thread forum (one file per
+//! thread, nested replies `F-3.1`) becomes one file per post (`F-00A`), each
+//! reply opening with a tag for the post it answered (`@F-009 ...`).
+//!
+//! Forum posts get ids in the order they were written; each keeps its old id as
+//! `legacy_id`, and a reply without a summary gets one derived from its first
+//! sentence. `F-3.1` mentions anywhere (tickets, comments, posts) follow.
 //!
 //! Every place a ticket ID is stored is rewritten consistently: the ticket files
 //! (renamed), the board's cards, relations, subscriptions, trash entries, forum
@@ -25,7 +31,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::model::{Board, IdFormat, Subscriptions, Thread, Ticket};
+use crate::model::{
+    Board, ForumEntry, ForumFormat, IdFormat, Post, Subscriptions, Thread, Ticket, FORMAT_VERSION,
+};
 use crate::trash::TrashEntry;
 use crate::Store;
 
@@ -40,6 +48,12 @@ struct Journal {
     /// Ticket files to remove: old names that no translated ticket reuses.
     remove_tickets: Vec<String>,
     threads: Vec<Thread>,
+    /// Forum posts in the one-file-per-post format (a converted thread forum).
+    #[serde(default)]
+    posts: Vec<ForumEntry>,
+    /// Thread files to remove once their posts are written.
+    #[serde(default)]
+    remove_forum: Vec<String>,
     subs: Option<Subscriptions>,
     trash: Vec<TrashEntry>,
     remove_trash: Vec<String>,
@@ -300,12 +314,43 @@ pub fn repair(store: &Store, now: DateTime<Utc>) -> Result<Repair> {
     Ok(report)
 }
 
-/// Compute the translation without writing anything (`None` if already hex).
+/// Whether a board still uses an old id format: decimal ticket ids, or the
+/// thread forum.
+pub fn needed(board: &Board) -> bool {
+    board.ids != IdFormat::Hex || board.forum == ForumFormat::Threads
+}
+
+/// Compute the translation without writing anything (`None` if nothing is left
+/// to translate).
 fn plan(store: &Store, now: DateTime<Utc>) -> Result<Option<Journal>> {
-    let mut board = store.load_board()?;
-    if board.ids == IdFormat::Hex {
+    let board = store.load_board()?;
+    if !needed(&board) {
         return Ok(None);
     }
+    let mut j = if board.ids == IdFormat::Hex {
+        Journal {
+            pairs: Vec::new(),
+            tickets: Vec::new(),
+            remove_tickets: Vec::new(),
+            threads: Vec::new(),
+            posts: Vec::new(),
+            remove_forum: Vec::new(),
+            subs: None,
+            trash: Vec::new(),
+            remove_trash: Vec::new(),
+            board,
+        }
+    } else {
+        plan_tickets(store, board, now)?
+    };
+    if j.board.forum == ForumFormat::Threads {
+        plan_forum(store, &mut j, now)?;
+    }
+    Ok(Some(j))
+}
+
+/// The ticket half of [`plan`]: decimal ids to hex.
+fn plan_tickets(store: &Store, mut board: Board, now: DateTime<Utc>) -> Result<Journal> {
     let on_disk = store.ticket_ids()?;
 
     // Tickets that already carry a legacy_id were translated by an interrupted
@@ -421,16 +466,167 @@ fn plan(store: &Store, now: DateTime<Utc>) -> Result<Option<Journal>> {
 
     let mut pairs: Vec<(String, String)> = map.into_iter().collect();
     pairs.sort_by_key(|(old, _)| decimal_counter(old).unwrap_or(u64::MAX));
-    Ok(Some(Journal {
+    Ok(Journal {
         pairs,
         tickets,
         remove_tickets,
         threads,
+        posts: Vec::new(),
+        remove_forum: Vec::new(),
         subs: subs_changed.then_some(subs),
         trash,
         remove_trash,
         board,
-    }))
+    })
+}
+
+/// The forum half of [`plan`]: every thread's posts become files of their own,
+/// numbered in the order they were written. Works on the ticket half's result
+/// (threads with ticket refs already rewritten), so nothing is rewritten twice.
+fn plan_forum(store: &Store, j: &mut Journal, now: DateTime<Utc>) -> Result<()> {
+    // The threads as the ticket half left them (it keeps only changed ones).
+    let mut threads: BTreeMap<String, Thread> = store
+        .load_all_threads()?
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+    for t in std::mem::take(&mut j.threads) {
+        threads.insert(t.id.clone(), t);
+    }
+    // Every post with its thread, parent and summary, oldest first.
+    struct Old {
+        post: Post,
+        parent: Option<String>,
+        summary: String,
+        uid: Option<String>,
+    }
+    let mut old: Vec<Old> = Vec::new();
+    for t in threads.values() {
+        fn walk(t: &Thread, p: &Post, parent: Option<&str>, out: &mut Vec<Old>) {
+            let summary = match parent {
+                None => t.title.clone(),
+                Some(_) => p
+                    .summary
+                    .clone()
+                    .unwrap_or_else(|| crate::refs::derive_summary(&p.body)),
+            };
+            let mut post = p.clone();
+            post.replies.clear();
+            out.push(Old {
+                post,
+                parent: parent.map(str::to_string),
+                summary,
+                uid: if parent.is_none() {
+                    t.uid.clone()
+                } else {
+                    None
+                },
+            });
+            for r in &p.replies {
+                walk(t, r, Some(&p.id), out);
+            }
+        }
+        walk(t, &t.root, None, &mut old);
+    }
+    // Stable: posts written in the same instant keep their thread order.
+    old.sort_by_key(|o| o.post.created);
+    let map: BTreeMap<String, String> = old
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (o.post.id.clone(), crate::id::hex_post_id(i as u64 + 1)))
+        .collect();
+    let fix_ref = |r: &mut String| {
+        if let Some(new) = map.get(r.as_str()) {
+            *r = new.clone();
+        }
+    };
+    for o in old {
+        let parent = o.parent.as_ref().and_then(|p| map.get(p)).cloned();
+        let body = crate::refs::rewrite(&o.post.body, &map);
+        let mut refs = o.post.refs.clone();
+        refs.iter_mut().for_each(fix_ref);
+        j.posts.push(ForumEntry {
+            version: FORMAT_VERSION,
+            id: map[&o.post.id].clone(),
+            uid: Some(o.uid.unwrap_or_else(crate::id::uid)),
+            legacy_id: Some(o.post.id.clone()),
+            summary: crate::refs::rewrite(&o.summary, &map),
+            author: o.post.author,
+            body: crate::refs::with_reply_prefix(&body, &parent.into_iter().collect::<Vec<_>>()),
+            labels: o.post.labels,
+            attachments: o.post.attachments,
+            refs,
+            created: o.post.created,
+            edited: o.post.edited,
+        });
+    }
+    j.remove_forum = threads.into_keys().collect();
+
+    // `F-3.1` mentions elsewhere: tickets (those the ticket half translated, or
+    // all of them on a hex board), trash, subscriptions.
+    if !map.is_empty() {
+        let fix_text = |t: &mut Ticket| -> bool {
+            let before = t.clone();
+            let r = |x: &str| crate::refs::rewrite(x, &map);
+            t.title = r(&t.title);
+            t.body = r(&t.body);
+            if let Some(o) = &mut t.original {
+                o.title = r(&o.title);
+                o.body = r(&o.body);
+            }
+            for c in &mut t.comments {
+                c.body = r(&c.body);
+            }
+            for i in t.checklist.iter_mut().chain(t.acceptance.iter_mut()) {
+                i.text = r(&i.text);
+            }
+            for a in &mut t.activity {
+                a.detail = r(&a.detail);
+            }
+            *t != before
+        };
+        if j.pairs.is_empty() {
+            for mut t in store.load_all_tickets()? {
+                if fix_text(&mut t) {
+                    j.tickets.push(t);
+                }
+            }
+            for mut e in crate::trash::read_entries(store)? {
+                if fix_text(&mut e.ticket) {
+                    j.trash.push(e);
+                }
+            }
+        } else {
+            for t in &mut j.tickets {
+                fix_text(t);
+            }
+            for e in &mut j.trash {
+                fix_text(&mut e.ticket);
+            }
+        }
+        let had = j.subs.is_some();
+        let mut subs = match j.subs.take() {
+            Some(s) => s,
+            None => store.load_subscriptions()?,
+        };
+        let mut changed = false;
+        for r in subs.subs.values_mut().flat_map(|v| v.iter_mut()) {
+            if let Some(new) = r.strip_prefix("forum:").and_then(|id| map.get(id)) {
+                *r = format!("forum:{new}");
+                changed = true;
+            }
+        }
+        if changed || had {
+            j.subs = Some(subs);
+        }
+    }
+    let mut pairs: Vec<(String, String)> = map.into_iter().collect();
+    pairs.sort_by(|a, b| a.1.cmp(&b.1));
+    j.pairs.extend(pairs);
+    j.board.next_thread = j.posts.len() as u64 + 1;
+    j.board.forum = ForumFormat::Posts;
+    j.board.updated = now;
+    Ok(())
 }
 
 /// Write the journal's values: new files first, then the removal of old names
@@ -445,6 +641,15 @@ fn apply(store: &Store, j: &Journal) -> Result<()> {
     }
     for t in &j.threads {
         store.save_thread(t)?;
+    }
+    for p in &j.posts {
+        store.save_entry(p)?;
+    }
+    for id in &j.remove_forum {
+        let path = store.forum_dir().join(format!("{id}.json"));
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
     }
     if let Some(subs) = &j.subs {
         store.save_subscriptions(subs)?;
@@ -506,6 +711,7 @@ mod tests {
         let s = Store::init(dir.path(), "Legacy", Utc::now()).unwrap();
         let mut b: Board = s.load_board().unwrap();
         b.ids = IdFormat::Decimal;
+        b.forum = ForumFormat::Threads;
         s.save_board(&b).unwrap();
         for i in 0..n {
             let spec = NewTicket {
@@ -559,7 +765,7 @@ mod tests {
         }
 
         let pairs = translate_ids(&s, Utc::now()).unwrap();
-        assert_eq!(pairs.len(), 300);
+        assert_eq!(pairs.len(), 301, "300 tickets and the forum's one post");
         assert_eq!(pairs[0], ("T-1".into(), "T-001".into()));
         assert_eq!(pairs[255], ("T-256".into(), "T-100".into()));
 
@@ -580,10 +786,14 @@ mod tests {
             crate::inbox::subscriptions_of(&s, "ada").unwrap(),
             ["T-100"]
         );
-        let th = s.load_thread("F-1").unwrap();
+        let post = s.load_entry("F-001").unwrap();
         assert_eq!(
-            (th.title.as_str(), th.root.refs[0].as_str()),
-            ("about T-00C", "T-00C")
+            (
+                post.summary.as_str(),
+                post.refs[0].as_str(),
+                post.legacy_id.as_deref()
+            ),
+            ("about T-00C", "T-00C", Some("F-1"))
         );
         let mut trashed: Vec<String> = crate::trash::list_trash(&s, 7, Utc::now())
             .unwrap()
@@ -646,7 +856,8 @@ mod tests {
             Some("T-12")
         );
         assert_eq!(crate::inbox::subscriptions_of(s, "ada").unwrap(), ["T-00B"]);
-        assert_eq!(s.load_thread("F-1").unwrap().root.refs[0], "T-00C");
+        assert_eq!(s.load_entry("F-001").unwrap().refs[0], "T-00C");
+        assert_eq!(b.forum, ForumFormat::Posts);
         assert!(!interrupted(s));
         assert!(stage_dirs(s).is_empty());
         assert!(!s.cache_dir().join(JOURNAL).exists());
@@ -714,12 +925,94 @@ mod tests {
             assert!(interrupted(&s), "{}", c.what);
             assert_eq!(
                 translate_ids(&s, Utc::now()).unwrap().len(),
-                12,
+                13,
                 "{}",
                 c.what
             );
             assert_fully_translated(&s);
         }
+    }
+
+    /// A thread forum becomes one file per post, in the order they were
+    /// written: replies open with their parent's tag, keep their old id, get a
+    /// summary, and every `F-3.1` mention follows - also on hex boards.
+    #[test]
+    fn converts_the_thread_forum_to_posts() {
+        use crate::forum::{self, NewReply, NewThread};
+        let (_d, s) = legacy_board(2);
+        let mut b = s.load_board().unwrap();
+        b.ids = IdFormat::Hex;
+        s.save_board(&b).unwrap();
+        let t0 = Utc::now();
+        let at = |m: i64| t0 + chrono::Duration::minutes(m);
+        let thread = |title: &str, m: i64| {
+            let spec = NewThread {
+                title: title.into(),
+                body: format!("{title}!"),
+                ..Default::default()
+            };
+            forum::create_thread(&s, spec, "ada", at(m)).unwrap()
+        };
+        let reply = |parent: &str, body: &str, summary: &str, m: i64| {
+            let spec = NewReply {
+                summary: summary.into(),
+                body: body.into(),
+                ..Default::default()
+            };
+            forum::reply(&s, parent, spec, "bob", at(m)).unwrap()
+        };
+        assert_eq!(thread("Auth", 0), "F-1");
+        assert_eq!(thread("Perf", 1), "F-2");
+        assert_eq!(reply("F-1", "Agreed. See F-2 too", "x", 2), "F-1.1");
+        // A reply from before summaries: none stored, derived on conversion.
+        let mut th = s.load_thread("F-1").unwrap();
+        th.root.replies[0].summary = None;
+        s.save_thread(&th).unwrap();
+        assert_eq!(reply("F-1.1", "why?", "Asking why", 3), "F-1.1.1");
+        ops::add_comment(&s, "T-1", "ada", "decided in F-1.1", Utc::now()).unwrap();
+        crate::inbox::subscribe(&s, "ada", "forum:F-1").unwrap();
+
+        let pairs = translate_ids(&s, Utc::now()).unwrap();
+        assert_eq!(
+            pairs,
+            [
+                ("F-1".to_string(), "F-001".to_string()),
+                ("F-2".into(), "F-002".into()),
+                ("F-1.1".into(), "F-003".into()),
+                ("F-1.1.1".into(), "F-004".into()),
+            ]
+        );
+        let b = s.load_board().unwrap();
+        assert_eq!((b.forum, b.next_thread), (ForumFormat::Posts, 5));
+        let e = s.load_entry("F-003").unwrap();
+        assert_eq!(e.body, "@F-001 Agreed. See F-002 too");
+        assert_eq!(e.summary, "Agreed. See F-002 too");
+        assert_eq!(e.legacy_id.as_deref(), Some("F-1.1"));
+        assert_eq!(s.load_entry("F-004").unwrap().body, "@F-003 why?");
+        assert!(!s.forum_dir().join("F-1.json").exists());
+        let p = forum::get_post(&s, "F-1.1.1").unwrap();
+        assert_eq!(
+            (p.id.as_str(), p.thread_id.as_str(), p.depth),
+            ("F-004", "F-001", 2)
+        );
+        assert_eq!(
+            s.load_ticket("T-1").unwrap().comments[0].body,
+            "decided in F-003"
+        );
+        assert_eq!(
+            crate::inbox::subscriptions_of(&s, "ada").unwrap(),
+            ["forum:F-001"]
+        );
+        // New posts continue the counter; a second run is a no-op.
+        let spec = NewThread {
+            title: "Next".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            forum::create_thread(&s, spec, "ada", Utc::now()).unwrap(),
+            "F-005"
+        );
+        assert!(translate_ids(&s, Utc::now()).unwrap().is_empty());
     }
 
     /// Boards hand-repaired after 0.4.1 read as hex, but their trash and forum

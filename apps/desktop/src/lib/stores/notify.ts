@@ -10,11 +10,13 @@
 //     tab is hidden or unfocused - clicking one focuses the board and opens the
 //     ticket or thread;
 //   - as small in-app toasts while you're looking at the board.
+// Being mentioned (`@you`, in a ticket, comment or post) notifies you whether
+// you watch it or not - a mention is like an assignment.
 // Watches are per board and per browser (localStorage). Native notifications
 // need a secure origin (https, or http://localhost); elsewhere - e.g. a phone on
 // the LAN URL - toasts are used.
 import { writable, get } from 'svelte/store';
-import type { Board, ForumThreadSummary, Ticket } from '$lib/types';
+import type { Board, ForumPost, Ticket } from '$lib/types';
 
 export type Watches = {
   board: boolean;
@@ -126,8 +128,9 @@ export type EventKind =
   | 'edited'
   | 'reply';
 
-/** What clicking a notification opens. */
-export type Target = { ticket?: string; thread?: string };
+/** What clicking a notification opens: a ticket, or a forum post (`thread`:
+ *  a thread's opening post). */
+export type Target = { ticket?: string; thread?: string; post?: string };
 
 /** Clicking a notification/toast asks the page to open this. */
 export const openRequest = writable<Target | null>(null);
@@ -225,11 +228,50 @@ function ticketEvents(t: Ticket, prev: Ticket | undefined, listName: string): Ev
   return out;
 }
 
+/** Mentions of `meId` that `t` gained over `prev` (new comments, or a title /
+ *  description that now mentions you). */
+function mentionEvents(t: Ticket, prev: Ticket | undefined, meId: string): Event[] {
+  const out: Event[] = [];
+  const target = { ticket: t.id };
+  const mentioned = (s: string) => mentionsOf(s).some((m) => sameId(m, meId));
+  for (const c of t.comments.slice(prev?.comments.length ?? 0)) {
+    if (sameId(c.author, meId) || !mentioned(c.body)) continue;
+    out.push({
+      kind: 'assigned',
+      title: `${who(c.author)} mentioned you on ${t.id}`,
+      body: `${t.title}\n“${snippet(c.body)}”`,
+      target,
+      tag: `${t.id}:m`
+    });
+  }
+  const now = mentioned(`${t.title}\n${t.body}`);
+  const before = prev ? mentioned(`${prev.title}\n${prev.body}`) : false;
+  if (now && !before) {
+    const by = t.activity.at(-1)?.actor ?? '';
+    if (!sameId(by, meId))
+      out.push({
+        kind: 'assigned',
+        title: `${by ? who(by) : 'Someone'} mentioned you in ${t.id}`,
+        body: t.title,
+        target,
+        tag: `${t.id}:m`
+      });
+  }
+  return out;
+}
+
 /** Called with every new live board snapshot (same project as `prev`). `skip`
- *  holds ids the local user just changed - never notify about your own edits. */
-export function notifyBoardChanges(prev: Board, next: Board, skip: Set<string>): void {
+ *  holds ids the local user just changed - never notify about your own edits.
+ *  `meId` is the local person's identity, for mentions. */
+export function notifyBoardChanges(
+  prev: Board,
+  next: Board,
+  skip: Set<string>,
+  meId: string | null = null
+): void {
   const w = get(watches);
-  if (!w.board && !w.lists.length && !w.tickets.length) return;
+  const watching = w.board || w.lists.length > 0 || w.tickets.length > 0;
+  if (!watching && !meId) return;
   const before = new Map<string, Ticket>();
   const beforeList = new Map<string, string>();
   for (const l of prev.lists)
@@ -243,6 +285,11 @@ export function notifyBoardChanges(prev: Board, next: Board, skip: Set<string>):
       const p = before.get(t.id);
       if (p === t || skip.has(t.id)) continue;
       if (p && p.updated === t.updated) continue;
+      const mentions = meId ? mentionEvents(t, p, meId) : [];
+      if (mentions.length) {
+        events.push(...mentions);
+        continue;
+      }
       // A card counts for a watched list while in it, and when it leaves it.
       const from = beforeList.get(t.id);
       const watched =
@@ -257,42 +304,66 @@ export function notifyBoardChanges(prev: Board, next: Board, skip: Set<string>):
   emit(events);
 }
 
-const lastPosts = new Map<string, number>();
+const seenPosts = new Set<string>();
 let forumBaselined: string | null = null;
 
-/** Called with every forum poll; notifies about new posts on watched threads. */
-export function notifyForum(project: string | null, threads: ForumThreadSummary[]): void {
+/** Called with every forum load: notifies about new posts on watched threads,
+ *  and about any new post that mentions you (`@you`), watched or not - a
+ *  mention is like an assignment. */
+export function notifyForum(project: string | null, posts: ForumPost[], meId: string | null): void {
   const first = forumBaselined !== project;
   if (first) {
-    lastPosts.clear();
+    seenPosts.clear();
     forumBaselined = project;
   }
   const w = get(watches);
   const events: Event[] = [];
-  for (const t of threads) {
-    const before = lastPosts.get(t.id);
-    lastPosts.set(t.id, t.posts);
-    if (first || !(w.forum || w.threads.includes(t.id))) continue;
-    if (before === undefined) {
+  const fresh = posts.filter((p) => !seenPosts.has(p.id));
+  for (const p of posts) seenPosts.add(p.id);
+  if (first) return;
+  for (const p of fresh.reverse()) {
+    if (meId && sameId(p.author, meId)) continue;
+    if (meId && mentionsOf(p.body).some((m) => sameId(m, meId))) {
       events.push({
-        kind: 'reply',
-        title: `New thread by ${who(t.author)}`,
-        body: `${t.id} · ${t.title}`,
-        target: { thread: t.id },
-        tag: t.id
+        kind: 'assigned',
+        title: `${who(p.author)} mentioned you in ${p.id}`,
+        body: `${p.summary}\n“${snippet(p.body)}”`,
+        target: { post: p.id },
+        tag: `${p.id}:m`
       });
-    } else if (t.posts > before) {
-      const n = t.posts - before;
-      events.push({
-        kind: 'reply',
-        title: `${who(t.last_author)} replied in ${t.id}${n > 1 ? ` (+${n})` : ''}`,
-        body: t.title,
-        target: { thread: t.id },
-        tag: t.id
-      });
+      continue;
     }
+    if (!(w.forum || w.threads.includes(p.thread_id))) continue;
+    events.push({
+      kind: 'reply',
+      title:
+        p.depth === 0
+          ? `New thread by ${who(p.author)}`
+          : `${who(p.author)} replied in ${p.thread_id}`,
+      body: `${p.id} · ${p.summary}`,
+      target: { post: p.id },
+      tag: p.thread_id
+    });
   }
   emit(events);
+}
+
+/** Whether an author / mention (`Name <email>`, `email`, `claude`) is `id`. */
+export function sameId(a: string, id: string): boolean {
+  const key = (x: string) => (x.match(/<([^>]+)>/)?.[1] ?? x).trim().toLowerCase();
+  return key(a) === key(id);
+}
+
+/** The identities a text mentions (`@claude`, `@ada@example.com`). */
+export function mentionsOf(text: string): string[] {
+  const out: string[] = [];
+  const re = /(^|[^\w@./+-])@([A-Za-z0-9][\w.+-]*(?:@[\w-]+(?:\.[\w-]+)+)?)/g;
+  for (const m of text.matchAll(re)) {
+    const id = m[2].replace(/[.+-]+$/, '');
+    if (/^[TF]-[0-9A-F]+$/.test(id)) continue;
+    out.push(id);
+  }
+  return out;
 }
 
 function emit(events: Event[]): void {

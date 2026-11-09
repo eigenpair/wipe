@@ -44,9 +44,14 @@ pub struct Board {
     /// keep decimal IDs (`T-23`) until translated with `wipe board translate-ids`.
     #[serde(default, skip_serializing_if = "IdFormat::is_decimal")]
     pub ids: IdFormat,
-    /// Next forum-thread counter; `F-<next_thread>` is the next thread ID.
+    /// Next forum counter: the next post is `F-<next_thread>` (hex, like ticket
+    /// ids, on a [`ForumFormat::Posts`] board; decimal thread ids before that).
     #[serde(default = "one")]
     pub next_thread: u64,
+    /// How the forum is stored. Absent on boards created before 1.1, which keep
+    /// nested reply threads until converted with `wipe board translate-ids`.
+    #[serde(default, skip_serializing_if = "ForumFormat::is_threads")]
+    pub forum: ForumFormat,
     /// When the board was created.
     pub created: DateTime<Utc>,
     /// When the board was last modified.
@@ -69,6 +74,26 @@ impl IdFormat {
     /// Whether this is the legacy decimal format (used to omit the field).
     pub fn is_decimal(&self) -> bool {
         matches!(self, IdFormat::Decimal)
+    }
+}
+
+/// How a board stores its forum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForumFormat {
+    /// Before 1.1: one file per thread holding a nested reply tree, dotted post
+    /// ids (`F-3.1.2`). The absent-field default.
+    #[default]
+    Threads,
+    /// One file per post (`F-01A`, hex like ticket ids). A post replies to the
+    /// posts its text opens with tags for (`@F-01A ...`); see [`ForumEntry`].
+    Posts,
+}
+
+impl ForumFormat {
+    /// Whether this is the legacy thread format (used to omit the field).
+    pub fn is_threads(&self) -> bool {
+        matches!(self, ForumFormat::Threads)
     }
 }
 
@@ -97,6 +122,7 @@ impl Board {
             next_ticket: 1,
             ids: IdFormat::Hex,
             next_thread: 1,
+            forum: ForumFormat::Posts,
             created: now,
             updated: now,
         }
@@ -529,6 +555,10 @@ pub struct Post {
     /// Free-form references (ticket IDs like `T-3`, other post IDs, or URLs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
+    /// The post's one-sentence summary (a reply's header line; a root post's is
+    /// the thread title). Replies written before 1.1 have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// When the post was created.
     pub created: DateTime<Utc>,
     /// When the post was last edited, if ever.
@@ -557,6 +587,7 @@ impl Post {
             labels: Vec::new(),
             attachments: Vec::new(),
             refs: Vec::new(),
+            summary: None,
             created: now,
             edited: None,
             next_reply: 1,
@@ -599,6 +630,49 @@ impl Post {
     }
 }
 
+/// A forum post on a [`ForumFormat::Posts`] board: one file per post under
+/// `.wipe/forum/<id>.json`. Posts carry no structure of their own - a post is a
+/// reply to the posts its body *opens* with tags for (`@F-01A @F-01C ...`),
+/// and only references any it tags later on. So a thread is "a post with no
+/// leading post tags, and everything that (transitively) replies to it".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForumEntry {
+    /// On-disk format version.
+    pub version: u32,
+    /// Post ID: `F-` and at least three upper-case hex digits (`F-01A`).
+    pub id: String,
+    /// A hidden, random id that never changes (see [`Ticket::uid`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    /// The id this post had before the forum moved to one file per post
+    /// (`F-3.1`), so old links and mentions still resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_id: Option<String>,
+    /// The post's core statement in one sentence - its header line, and the
+    /// thread title of an opening post. Required. (`title` is read as an alias.)
+    #[serde(alias = "title")]
+    pub summary: String,
+    /// Author identity (git `Name <email>` or agent ID).
+    pub author: String,
+    /// Message body (Markdown). Leading `@F-...` tags make it a reply.
+    #[serde(default)]
+    pub body: String,
+    /// Labels, from the board's label pool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// Attached media/files (same storage as ticket attachments).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+    /// Free-form references (ticket ids, post ids, URLs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
+    /// When the post was created.
+    pub created: DateTime<Utc>,
+    /// When the post was last edited, if ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<DateTime<Utc>>,
+}
+
 // ---------------------------------------------------------------------------
 // identities.json
 // ---------------------------------------------------------------------------
@@ -612,6 +686,11 @@ pub struct Identity {
     pub display_name: String,
     /// Whether this identity is a human or an agent.
     pub kind: IdentityKind,
+    /// For an agent: the git account (email) of the person whose agent it is.
+    /// Agents act for a human; only that human's sessions can take this
+    /// identity (an unowned one is claimed by the first to use it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// Kind of an [`Identity`].

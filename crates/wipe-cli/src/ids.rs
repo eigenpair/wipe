@@ -191,13 +191,19 @@ pub fn offer_translation(json: bool, cmd: &Command) {
     let Ok(s) = Store::discover(".") else {
         return;
     };
-    if s.load_board()
-        .map(|b| b.ids != IdFormat::Decimal)
-        .unwrap_or(true)
-    {
+    let Ok(board) = s.load_board() else {
+        return;
+    };
+    if !wipe_core::translate::needed(&board) {
         return;
     }
-    let marker = s.cache_dir().join("ids-translation-offered");
+    // Asked once per format change: boards converted to hex ids before 1.1
+    // are asked again about the forum.
+    let marker = s.cache_dir().join(if board.ids == IdFormat::Decimal {
+        "ids-translation-offered"
+    } else {
+        "forum-translation-offered"
+    });
     if marker.exists() {
         return;
     }
@@ -205,27 +211,34 @@ pub fn offer_translation(json: bool, cmd: &Command) {
     let _ = std::fs::write(&marker, chrono::Utc::now().to_rfc3339());
 
     let interactive = !json && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let old = if board.ids == IdFormat::Decimal {
+        "the old decimal ticket ids (T-23)"
+    } else {
+        "the old thread forum (F-3.1)"
+    };
     if !interactive {
-        crate::output::hint(
-            "this board still uses the old decimal ticket ids (T-23). `wipe board translate-ids` \
-             converts it to the new fixed-width hex ids (T-017); old ids keep working as aliases",
-        );
+        crate::output::hint(format!(
+            "this board still uses {old}. `wipe board translate-ids` converts it to the current \
+             ids (T-017, one forum post per file F-00A) - a breaking change: everyone on the \
+             board must update wipe to 1.1+ first. Ask your user before converting"
+        ));
         return;
     }
     eprintln!(
-        "This board still uses the old decimal ticket ids (T-23). New boards use fixed-width\n\
-         hex ids (T-001, T-2AF) that are quicker to type and search. Translating renames the\n\
-         ticket files and rewrites references; old ids keep working as aliases.\n\
-         Commit or merge open branches first, and have collaborators pull right after."
+        "This board still uses {old}. Current boards use fixed-width hex ids (T-001, T-2AF)\n\
+         and a forum where every post has its own id (F-00A) and replies by @ tag.\n\
+         Converting renames files and rewrites references; old ids keep working as aliases.\n\
+         BREAKING: everyone who uses this board must update wipe to 1.1 or newer - older\n\
+         versions can't read the converted board. Commit or merge open work first."
     );
-    let yes = inquire::Confirm::new("Translate this board's ticket ids now?")
+    let yes = inquire::Confirm::new("Convert this board now?")
         .with_default(false)
         .with_help_message("asked once - later: `wipe board translate-ids`")
         .prompt()
         .unwrap_or(false);
     if yes {
         match translate(&s) {
-            Ok(n) => eprintln!("translated {n} ticket ids to the hex format"),
+            Ok(n) => eprintln!("converted {n} ids"),
             Err(e) => eprintln!("translation failed: {e:#}"),
         }
     }

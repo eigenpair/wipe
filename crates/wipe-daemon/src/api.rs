@@ -14,8 +14,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
-use wipe_core::forum::{self, NewReply, NewThread, SearchQuery};
-use wipe_core::model::{Board, IdentityKind, Ticket};
+use wipe_core::forum::{self, NewPost, SearchQuery};
+use wipe_core::model::{Attachment, Board, IdentityKind, Ticket};
 use wipe_core::ops::{self, NewTicket, TicketPatch};
 use wipe_core::Store;
 
@@ -243,7 +243,7 @@ pub(crate) fn board_json(board: &Board, view: &[(String, Vec<Ticket>)]) -> Value
             json!({ "list": list_id, "name": name, "tickets": tickets })
         })
         .collect();
-    json!({ "board": board.name, "ids": board.ids, "lists": lists })
+    json!({ "board": board.name, "ids": board.ids, "forum": board.forum, "lists": lists })
 }
 
 /// `POST /api/board/translate-ids` - convert a legacy decimal board to hex ticket
@@ -948,12 +948,45 @@ pub async fn put_identity(
     Json(b): Json<IdentityBody>,
 ) -> ApiResult {
     let store = store_for(&state, pq.project.or(b.project))?;
-    let kind = match b.kind.as_deref() {
-        Some("agent") => Some(IdentityKind::Agent),
-        Some("human") => Some(IdentityKind::Human),
-        _ => None,
+    // A person's identity is their account in version control: only its alias
+    // (the display name) can be chosen, and only by that person. Agents belong
+    // to the person whose agent they are.
+    let me = ops::account(&store).map(|(_, key)| key);
+    let existing = ops::list_identities(&store)?
+        .into_iter()
+        .find(|i| i.id.eq_ignore_ascii_case(&id));
+    let ident = match existing {
+        Some(i) if i.kind == IdentityKind::Human => {
+            if me
+                .as_deref()
+                .is_some_and(|m| !m.eq_ignore_ascii_case(&i.id))
+            {
+                return Err(ApiError(anyhow::anyhow!(
+                    "`{}` is another person's identity - only they can set its alias",
+                    i.id
+                )));
+            }
+            ops::upsert_identity(&store, &i.id, &b.display_name, Some(IdentityKind::Human))?
+        }
+        Some(i) => {
+            if let (Some(owner), Some(m)) = (&i.owner, &me) {
+                if !owner.eq_ignore_ascii_case(m) {
+                    return Err(ApiError(anyhow::anyhow!(
+                        "`{}` is {owner}'s agent - only they can rename it",
+                        i.id
+                    )));
+                }
+            }
+            ops::claim_agent(&store, &i.id, Some(&b.display_name), me.as_deref())?.0
+        }
+        None if b.kind.as_deref() == Some("human") => {
+            return Err(ApiError(anyhow::anyhow!(
+                "people's identities come from version control (git user.email) - \
+                 they can't be created here"
+            )))
+        }
+        None => ops::claim_agent(&store, &id, Some(&b.display_name), me.as_deref())?.0,
     };
-    let ident = ops::upsert_identity(&store, &id, &b.display_name, kind)?;
     notify(&state);
     Ok(Json(serde_json::to_value(ident)?))
 }
@@ -966,6 +999,26 @@ pub async fn delete_identity(
     Query(q): Query<ProjectQuery>,
 ) -> ApiResult {
     let store = store_for(&state, q.project)?;
+    let me = ops::account(&store).map(|(_, key)| key);
+    if let Some(i) = ops::list_identities(&store)?
+        .into_iter()
+        .find(|i| i.id.eq_ignore_ascii_case(&id))
+    {
+        if i.kind == IdentityKind::Human {
+            return Err(ApiError(anyhow::anyhow!(
+                "`{}` is a person's identity (from version control) - it can't be removed",
+                i.id
+            )));
+        }
+        if let (Some(owner), Some(m)) = (&i.owner, &me) {
+            if !owner.eq_ignore_ascii_case(m) {
+                return Err(ApiError(anyhow::anyhow!(
+                    "`{}` is {owner}'s agent - only they can remove it",
+                    i.id
+                )));
+            }
+        }
+    }
     ops::delete_identity(&store, &id)?;
     notify(&state);
     Ok(Json(json!({ "ok": true, "id": id })))
@@ -1310,25 +1363,28 @@ pub async fn remove_list(
 
 // --- forum -----------------------------------------------------------------
 
-/// `GET /api/forum` - thread summaries (root posts + total post counts), newest first.
+/// `GET /api/forum` - thread summaries (opening posts + post counts), newest
+/// activity first.
 pub async fn forum_list(State(state): State<AppState>, Query(q): Query<ProjectQuery>) -> ApiResult {
     let store = store_for(&state, q.project)?;
     let all = forum::index(&store)?;
+    let mut by_thread: std::collections::HashMap<&str, Vec<&forum::PostView>> =
+        std::collections::HashMap::new();
+    for p in &all {
+        by_thread.entry(p.thread_id.as_str()).or_default().push(p);
+    }
     let mut threads: Vec<Value> = all
         .iter()
         .filter(|p| p.depth == 0)
         .map(|r| {
-            let thread_posts: Vec<&_> = all.iter().filter(|p| p.thread_id == r.thread_id).collect();
-            let posts = thread_posts.len();
-            // Last activity = the most recent post anywhere in the thread; its author
-            // is who bumped it. Drives the sidebar's activity sort + "· 2m ago".
+            let thread_posts = by_thread.get(r.id.as_str()).cloned().unwrap_or_default();
+            // Last activity = the most recent post anywhere in the thread; its
+            // author is who bumped it.
             let last = thread_posts
                 .iter()
                 .max_by_key(|p| p.created)
                 .copied()
                 .unwrap_or(r);
-            // A one-line preview from the root post so the sidebar rows are legible
-            // at a glance (collapse whitespace, trim).
             let snippet: String = r
                 .body
                 .split_whitespace()
@@ -1337,18 +1393,16 @@ pub async fn forum_list(State(state): State<AppState>, Query(q): Query<ProjectQu
                 .chars()
                 .take(140)
                 .collect();
-            // Distinct authors anywhere in the thread, so the UI can filter by "who
-            // engaged" (participated), not just the OP.
             let mut participants: Vec<String> =
                 thread_posts.iter().map(|p| p.author.clone()).collect();
             participants.sort();
             participants.dedup();
             json!({
-                "id": r.thread_id,
-                "title": r.thread_title,
+                "id": r.id,
+                "title": r.summary,
                 "author": r.author,
                 "labels": r.labels,
-                "posts": posts,
+                "posts": thread_posts.len().max(1),
                 "created": r.created,
                 "updated": last.created,
                 "last_author": last.author,
@@ -1357,37 +1411,81 @@ pub async fn forum_list(State(state): State<AppState>, Query(q): Query<ProjectQu
             })
         })
         .collect();
-    // Newest activity first (the daemon sorts so every client gets it consistently).
     threads.sort_by(|a, b| b["updated"].as_str().cmp(&a["updated"].as_str()));
     Ok(Json(json!({ "threads": threads })))
 }
 
-/// `GET /api/forum/{id}` - a whole thread (root + nested reply tree).
+/// `GET /api/forum/posts` - every post, flat (with its thread, parents and
+/// summary), newest first. The board UI builds threads, previews and `@`
+/// suggestions from this one list.
+pub async fn forum_posts(
+    State(state): State<AppState>,
+    Query(q): Query<ProjectQuery>,
+) -> ApiResult {
+    let store = store_for(&state, q.project)?;
+    let board = store.load_board()?;
+    Ok(Json(json!({
+        "format": board.forum,
+        "posts": forum::index(&store)?,
+    })))
+}
+
+/// `GET /api/forum/{id}` - the thread a post belongs to, oldest post first.
 pub async fn forum_thread(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<ProjectQuery>,
 ) -> ApiResult {
     let store = store_for(&state, q.project)?;
-    Ok(Json(serde_json::to_value(forum::get_thread(&store, &id)?)?))
+    let posts = forum::thread_posts(&store, &id)?;
+    let thread = posts.first().map(|p| p.thread_id.clone()).unwrap_or(id);
+    Ok(Json(json!({ "thread": thread, "posts": posts })))
 }
 
-/// Body for creating a thread.
+/// Attachments a client sends with a post: what `POST /api/media` staged. Only
+/// relative paths without `..` are accepted, so a post can't point outside the
+/// repository.
+fn checked_media(media: Vec<Attachment>) -> Result<Vec<Attachment>, ApiError> {
+    for a in &media {
+        let p = std::path::Path::new(&a.path);
+        let ok = !a.path.is_empty()
+            && p.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !ok {
+            return Err(ApiError(anyhow::anyhow!(
+                "invalid attachment path `{}`",
+                a.path
+            )));
+        }
+    }
+    Ok(media)
+}
+
+/// Body for writing a post.
 #[derive(Debug, Deserialize)]
 pub struct ForumPostBody {
     project: Option<String>,
-    title: String,
+    /// The one-sentence summary (`title` is accepted for older clients).
+    #[serde(alias = "title")]
+    summary: String,
     #[serde(default)]
     body: String,
     #[serde(default)]
     labels: Vec<String>,
     #[serde(default)]
     refs: Vec<String>,
+    /// Posts this one replies to (their tags go in front of the body).
+    #[serde(default)]
+    reply_to: Vec<String>,
+    /// Staged attachments (from `POST /api/media`).
+    #[serde(default)]
+    attachments: Vec<Attachment>,
     #[serde(default)]
     actor: Option<String>,
 }
 
-/// `POST /api/forum` - open a new thread.
+/// `POST /api/forum` - write a post (an opening post, or a reply when its
+/// body opens with post tags or `reply_to` names posts).
 pub async fn forum_create(
     State(state): State<AppState>,
     Query(pq): Query<ProjectQuery>,
@@ -1395,36 +1493,41 @@ pub async fn forum_create(
 ) -> ApiResult {
     let store = store_for(&state, pq.project.or(b.project))?;
     let actor = resolve_actor(&state, &store, b.actor);
-    let t = forum::create_thread(
+    let id = forum::create_post(
         &store,
-        NewThread {
-            title: b.title,
+        NewPost {
+            summary: b.summary,
             body: b.body,
             labels: b.labels,
             refs: b.refs,
-            attachments: Vec::new(),
+            attachments: checked_media(b.attachments)?,
+            reply_to: b.reply_to,
         },
         &actor,
         Utc::now(),
     )?;
     notify(&state);
-    Ok(Json(serde_json::to_value(t)?))
+    Ok(Json(serde_json::to_value(forum::get_post(&store, &id)?)?))
 }
 
 /// Body for replying to a post.
 #[derive(Debug, Deserialize)]
 pub struct ForumReplyBody {
     project: Option<String>,
+    #[serde(default)]
+    summary: String,
     body: String,
     #[serde(default)]
     labels: Vec<String>,
     #[serde(default)]
     refs: Vec<String>,
     #[serde(default)]
+    attachments: Vec<Attachment>,
+    #[serde(default)]
     actor: Option<String>,
 }
 
-/// `POST /api/forum/{id}/reply` - reply to a post at any depth.
+/// `POST /api/forum/{id}/reply` - reply to a post.
 pub async fn forum_reply(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1433,14 +1536,15 @@ pub async fn forum_reply(
 ) -> ApiResult {
     let store = store_for(&state, pq.project.or(b.project))?;
     let actor = resolve_actor(&state, &store, b.actor);
-    let child = forum::reply(
+    let child = forum::create_post(
         &store,
-        &id,
-        NewReply {
+        NewPost {
+            summary: b.summary,
             body: b.body,
             labels: b.labels,
             refs: b.refs,
-            attachments: Vec::new(),
+            attachments: checked_media(b.attachments)?,
+            reply_to: vec![id.clone()],
         },
         &actor,
         Utc::now(),
@@ -1453,10 +1557,18 @@ pub async fn forum_reply(
 #[derive(Debug, Deserialize)]
 pub struct ForumEditBody {
     project: Option<String>,
-    body: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    /// Labels to add / remove.
+    #[serde(default)]
+    label_add: Vec<String>,
+    #[serde(default)]
+    label_remove: Vec<String>,
 }
 
-/// `PATCH /api/forum/{id}` - edit a post's body.
+/// `PATCH /api/forum/{id}` - edit a post's body / summary / labels.
 pub async fn forum_edit(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1464,12 +1576,26 @@ pub async fn forum_edit(
     Json(b): Json<ForumEditBody>,
 ) -> ApiResult {
     let store = store_for(&state, pq.project.or(b.project))?;
-    forum::edit_post(&store, &id, &b.body, Utc::now())?;
+    if b.body.is_some() || b.summary.is_some() {
+        forum::edit_post(
+            &store,
+            &id,
+            b.body.as_deref(),
+            b.summary.as_deref(),
+            Utc::now(),
+        )?;
+    }
+    for l in &b.label_add {
+        forum::set_label(&store, &id, l, true)?;
+    }
+    for l in &b.label_remove {
+        forum::set_label(&store, &id, l, false)?;
+    }
     notify(&state);
-    Ok(Json(json!({ "ok": true, "id": id })))
+    Ok(Json(serde_json::to_value(forum::get_post(&store, &id)?)?))
 }
 
-/// `DELETE /api/forum/{id}` - delete a post and its subtree.
+/// `DELETE /api/forum/{id}` - delete a post (replies stay).
 pub async fn forum_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1479,6 +1605,63 @@ pub async fn forum_delete(
     forum::delete_post(&store, &id, Utc::now())?;
     notify(&state);
     Ok(Json(json!({ "ok": true, "id": id })))
+}
+
+/// `POST /api/media` - stage an uploaded file (multipart field `file`) in the
+/// board's media store without attaching it anywhere yet; the returned
+/// attachment goes into a post (`attachments`).
+pub async fn stage_media(
+    State(state): State<AppState>,
+    Query(q): Query<ProjectQuery>,
+    mut multipart: Multipart,
+) -> ApiResult {
+    let store = store_for(&state, q.project)?;
+    let max = store.load_settings()?.max_attachment_mb * 1024 * 1024;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError(anyhow::anyhow!("bad upload: {e}")))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let name = field.file_name().unwrap_or("file").to_string();
+        let mime = field
+            .content_type()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| guess_mime(&name).to_string());
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| ApiError(anyhow::anyhow!("read upload: {e}")))?;
+        if bytes.len() as u64 > max {
+            return Err(ApiError(anyhow::anyhow!(
+                "attachment is {:.1} MB, over the {} MB limit",
+                bytes.len() as f64 / 1_048_576.0,
+                max / 1024 / 1024
+            )));
+        }
+        let att = ops::stage_media(&store, &name, &bytes, &mime)?;
+        return Ok(Json(serde_json::to_value(att)?));
+    }
+    Err(ApiError(anyhow::anyhow!("no `file` field in upload")))
+}
+
+/// `GET /api/whoami` - the person using this board: their account from the
+/// repository's version control (the ground truth of a human identity) and
+/// the alias they chose.
+pub async fn whoami(State(state): State<AppState>, Query(q): Query<ProjectQuery>) -> ApiResult {
+    let store = store_for(&state, q.project)?;
+    let actor = resolve_actor(&state, &store, None);
+    let (name, id) = ops::account(&store).unwrap_or_else(|| ops::split_account(&actor));
+    let alias = ops::list_identities(&store)?
+        .into_iter()
+        .find(|i| i.id.eq_ignore_ascii_case(&id))
+        .map(|i| i.display_name)
+        .unwrap_or_else(|| name.clone());
+    Ok(Json(
+        json!({ "id": id, "name": name, "display_name": alias, "actor": actor }),
+    ))
 }
 
 /// Query for a forum search.

@@ -70,6 +70,8 @@ export interface Board {
   board: string;
   /** Ticket id format: `hex` (`T-02A`) or a legacy decimal board (`T-42`). */
   ids?: 'hex' | 'decimal';
+  /** Forum format: absent/`threads` on boards from before 1.1. */
+  forum?: ForumFormat;
   commit?: string;
   lists: List[];
 }
@@ -133,26 +135,41 @@ export interface Definitions {
   priorities: string[];
 }
 
-/** A forum post: the root of a thread or a reply at any depth. */
+/** A forum post. Every post is its own entity with an id (`F-01A`); a post
+ *  *replies* to the posts its body opens with tags for (`@F-01A ...`), listed
+ *  in `parents`. `thread_id` is the opening post its first parents lead to. */
 export interface ForumPost {
   id: string;
+  /** Its id before the forum moved to one file per post (`F-3.1`). */
+  legacy_id?: string;
+  /** One sentence stating the post's core point: its header line. */
+  summary: string;
+  thread_id: string;
+  thread_title: string;
+  parents: string[];
   author: string;
   body: string;
   labels: string[];
   refs: string[];
-  attachments: Attachment[];
+  depth: number;
+  replies: number;
+  attachments: number;
+  media: Attachment[];
   created: string;
-  edited?: string;
-  replies: ForumPost[];
+  edited?: string | null;
 }
 
-export interface ForumThread {
-  version: number;
+/** How the board stores its forum: `posts` (1.1+) or the old `threads`. */
+export type ForumFormat = 'posts' | 'threads';
+
+/** The person using this board: their version-control account. */
+export interface Me {
+  /** Their identity id: the git email (or name without one). */
   id: string;
-  title: string;
-  root: ForumPost;
-  created: string;
-  updated: string;
+  name: string;
+  /** The alias they chose (display name). */
+  display_name: string;
+  actor: string;
 }
 
 export interface ForumThreadSummary {
@@ -172,21 +189,8 @@ export interface ForumThreadSummary {
   participants?: string[];
 }
 
-/** A flattened post returned by forum search. */
-export interface ForumMatch {
-  id: string;
-  thread_id: string;
-  thread_title: string;
-  author: string;
-  body: string;
-  labels: string[];
-  refs: string[];
-  depth: number;
-  replies: number;
-  attachments: number;
-  created: string;
-  edited?: string;
-}
+/** A post returned by forum search. */
+export type ForumMatch = ForumPost;
 
 export type IdentityKind = 'human' | 'agent';
 
@@ -194,6 +198,8 @@ export interface Identity {
   id: string;
   display_name: string;
   kind: IdentityKind;
+  /** For an agent: the git account (email) of the person whose agent it is. */
+  owner?: string;
 }
 
 export interface CreateTicketInput {

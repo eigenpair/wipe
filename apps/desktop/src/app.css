@@ -159,6 +159,79 @@ a {
   background: transparent;
 }
 
+/* `@` references (lib/refs.ts): compact chips, one hue per kind. */
+.wref.wref {
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 5px;
+  font-family: var(--wp-font-mono);
+  font-size: 0.86em;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition:
+    background var(--wp-fast) var(--wp-ease),
+    box-shadow var(--wp-fast) var(--wp-ease),
+    transform var(--wp-fast) var(--wp-ease);
+}
+.wref.wref-ticket {
+  color: color-mix(in srgb, var(--wp-accent) 88%, var(--wp-text));
+  background: color-mix(in srgb, var(--wp-accent) 13%, transparent);
+}
+.wref.wref-post {
+  color: color-mix(in srgb, var(--wp-focus) 88%, var(--wp-text));
+  background: color-mix(in srgb, var(--wp-focus) 13%, transparent);
+}
+.wref.wref-identity {
+  font-family: var(--wp-font-sans);
+  font-size: 0.95em;
+  font-weight: 600;
+  color: var(--wp-text);
+  background: color-mix(in srgb, var(--wp-text) 8%, transparent);
+  cursor: default;
+}
+/* A mention of you stands out like an assignment. */
+.wref.wref-me {
+  color: var(--wp-on-accent);
+  background: var(--wp-accent);
+}
+.wref.wref:hover {
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.wref.wref-missing {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+/* Where a reference jump lands: a short accent glow. */
+@keyframes wp-flash {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wp-accent) 0%, transparent);
+  }
+  18% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wp-accent) 70%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wp-accent) 0%, transparent);
+  }
+}
+.wp-flash {
+  animation: wp-flash 1.6s var(--wp-ease);
+}
+
+/* Scrolls without a visible scrollbar. */
+.wp-noscrollbar {
+  scrollbar-width: none;
+}
+.wp-noscrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

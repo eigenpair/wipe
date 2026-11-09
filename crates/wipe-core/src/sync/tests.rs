@@ -434,6 +434,10 @@ fn a_new_board_goes_straight_onto_the_branch() {
 fn forum_threads_and_replies_from_both_sides_are_kept() {
     use crate::forum::{self, NewReply, NewThread};
     let w = world();
+    // A board still on the thread forum (before 1.1).
+    let mut board = w.a.load_board().unwrap();
+    board.forum = crate::model::ForumFormat::Threads;
+    w.a.save_board(&board).unwrap();
     let thread = |s: &Store, title: &str| {
         forum::create_thread(
             s,
@@ -454,6 +458,7 @@ fn forum_threads_and_replies_from_both_sides_are_kept() {
             s,
             parent,
             NewReply {
+                summary: body.into(),
                 body: body.into(),
                 labels: vec![],
                 refs: vec![],
@@ -469,8 +474,8 @@ fn forum_threads_and_replies_from_both_sides_are_kept() {
     let b = clone(&w, "b");
 
     // Both start F-2 and both reply F-1.1.
-    assert_eq!(thread(&w.a, "A's thread").id, "F-2");
-    assert_eq!(thread(&b, "B's thread").id, "F-2");
+    assert_eq!(thread(&w.a, "A's thread"), "F-2");
+    assert_eq!(thread(&b, "B's thread"), "F-2");
     assert_eq!(reply(&w.a, "F-1", "a says"), "F-1.1");
     assert_eq!(reply(&b, "F-1", "b says"), "F-1.1");
     commit_ok(&w.a, None);
@@ -502,6 +507,91 @@ fn forum_threads_and_replies_from_both_sides_are_kept() {
         "F-3",
         "post ids follow the thread"
     );
+}
+
+#[test]
+fn forum_posts_from_both_sides_are_kept_and_their_tags_follow() {
+    use crate::forum::{self, NewPost};
+    let w = world();
+    let post = |s: &Store, summary: &str, body: &str| {
+        let spec = NewPost {
+            summary: summary.into(),
+            body: body.into(),
+            ..Default::default()
+        };
+        forum::create_post(s, spec, "tester", Utc::now()).unwrap()
+    };
+    post(&w.a, "Shared", "the topic");
+    commit_ok(&w.a, None);
+    let b = clone(&w, "b");
+
+    // Both reply with F-002; B replies to its own reply too.
+    assert_eq!(post(&w.a, "A agrees", "@F-001 yes"), "F-002");
+    assert_eq!(post(&b, "B disagrees", "@F-001 no"), "F-002");
+    assert_eq!(post(&b, "B again", "@F-002 because"), "F-003");
+    commit_ok(&w.a, None);
+    let c = commit_ok(&b, None);
+    assert!(
+        c.renumbered
+            .contains(&("F-002".to_string(), "F-004".to_string())),
+        "{:?}",
+        c.renumbered
+    );
+    let get = |id: &str| forum::get_post(&b, id).unwrap();
+    assert_eq!(get("F-002").summary, "A agrees");
+    assert_eq!(get("F-004").summary, "B disagrees");
+    // B's own tag followed its renumbered post.
+    let again = forum::index(&b)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.summary == "B again")
+        .unwrap();
+    assert!(again.body.starts_with("@F-004 "), "{}", again.body);
+    assert_eq!(again.thread_id, "F-001");
+}
+
+#[test]
+fn two_peoples_agents_with_one_name_stay_two_identities() {
+    use crate::ops::{self, NewTicket};
+    let w = world();
+    commit_ok(&w.a, None);
+    let b = clone(&w, "b");
+    // Both people's agents call themselves `claude`, unaware of each other.
+    ops::claim_agent(&w.a, "claude", None, Some("ada@x")).unwrap();
+    ops::claim_agent(&b, "claude", None, Some("bob@x")).unwrap();
+    let spec = NewTicket {
+        title: "by bob's claude, cc @claude".into(),
+        list: Some("todo".into()),
+        assignees: vec!["claude".into()],
+        ..Default::default()
+    };
+    let t = ops::create_ticket(&b, spec, "claude", Utc::now()).unwrap();
+    commit_ok(&w.a, None);
+    let c = commit_ok(&b, None);
+    assert!(
+        c.renumbered
+            .contains(&("claude".to_string(), "claude02".to_string())),
+        "{:?}",
+        c.renumbered
+    );
+    let ids = ops::list_identities(&b).unwrap();
+    let owner = |id: &str| {
+        ids.iter()
+            .find(|i| i.id == id)
+            .and_then(|i| i.owner.clone())
+    };
+    assert_eq!(
+        owner("claude").as_deref(),
+        Some("ada@x"),
+        "the incoming one keeps the id"
+    );
+    assert_eq!(owner("claude02").as_deref(), Some("bob@x"));
+    let t = b.load_ticket(&t.id).unwrap();
+    assert_eq!(t.assignees, ["claude02"]);
+    assert_eq!(t.title, "by bob's claude, cc @claude02");
+    assert_eq!(t.creator(), Some("claude02"));
+    // Bob's agent asking for `claude` now acts as its own.
+    assert_eq!(ops::agent_for(&b, "claude", Some("bob@x")), "claude02");
 }
 
 #[test]

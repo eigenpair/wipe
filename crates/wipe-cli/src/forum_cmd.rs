@@ -9,8 +9,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 
-use wipe_core::forum::{self, NewReply, NewThread, PostView, SearchQuery};
-use wipe_core::model::{Attachment, Post};
+use wipe_core::forum::{self, NewPost, PostView, SearchQuery};
+use wipe_core::model::Attachment;
 use wipe_core::Store;
 
 use crate::args::*;
@@ -85,17 +85,25 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
             let body = input::text(a.body, a.body_file.as_deref(), "the post body")?;
             let attachments = stage_attachments(&s, &a.attach)?;
             let author = identity::resolve(a.author)?;
-            let spec = NewThread {
-                title: a.title,
+            let spec = NewPost {
+                summary: a.summary,
                 body: body.unwrap_or_default(),
                 labels: a.labels,
                 refs: canonical_refs(&s, a.refs),
                 attachments,
+                reply_to: a.reply_to,
             };
-            let t = forum::create_thread(&s, spec, &author, Utc::now())?;
+            let id = forum::create_post(&s, spec, &author, Utc::now())?;
+            let p = forum::get_post(&s, &id)?;
+            let to = if p.parents.is_empty() {
+                String::new()
+            } else {
+                format!(" (reply to {})", p.parents.join(", "))
+            };
             out.ok(
-                format!("posted {} - {}", t.id, t.title),
-                json!({ "ok": true, "id": t.id, "title": t.title, "author": author }),
+                format!("posted {id} - {}{to}", safe::line(&p.summary)),
+                json!({ "ok": true, "id": id, "summary": p.summary, "thread": p.thread_id,
+                        "parents": p.parents, "author": author }),
             );
         }
 
@@ -104,13 +112,15 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
             let attachments = stage_attachments(&s, &a.attach)?;
             let author = identity::resolve(a.author)?;
             let parent = a.id.clone();
-            let spec = NewReply {
+            let spec = NewPost {
+                summary: a.summary,
                 body,
                 labels: a.labels,
                 refs: canonical_refs(&s, a.refs),
                 attachments,
+                reply_to: vec![parent.clone()],
             };
-            let id = forum::reply(&s, &parent, spec, &author, Utc::now())?;
+            let id = forum::create_post(&s, spec, &author, Utc::now())?;
             out.ok(
                 format!("replied {id} (to {parent})"),
                 json!({ "ok": true, "id": id, "parent": parent, "author": author }),
@@ -118,23 +128,26 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
         }
 
         ForumCmd::Show { id, depth, full } => {
-            let thread = forum::get_thread(&s, &id)?;
-            let root = thread
-                .root
-                .find(&id)
-                .ok_or_else(|| anyhow!("forum post `{id}` not found"))?;
-            // --depth bounds the JSON tree too, so the payload matches the text.
-            let mut pruned = prune_depth(root, depth);
-            let clipped = clean_tree(&mut pruned, full);
+            let all = forum::index(&s)?;
+            let id = forum::resolve_post_id(&s, &id)?;
+            let mut posts = forum::subtree(&all, &id);
+            let top_depth = posts.iter().find(|p| p.id == id).map_or(0, |p| p.depth);
+            // --depth bounds the JSON too, so the payload matches the text.
+            if let Some(d) = depth {
+                let keep = tree_within(&posts, &id, d);
+                posts.retain(|p| keep.contains(&p.id));
+            }
+            let clipped = clean_posts(&mut posts, full);
             if out.json {
-                out.json_value(
-                    &json!({ "thread": thread.id, "title": safe::line(&thread.title), "post": to_value(&pruned) }),
-                );
+                let root = posts.iter().find(|p| p.id == id);
+                out.json_value(&json!({
+                    "id": id,
+                    "thread": root.map(|p| p.thread_id.clone()),
+                    "title": root.map(|p| safe::line(&p.thread_title)),
+                    "posts": to_value(&posts),
+                }));
             } else {
-                if root.id == thread.id {
-                    println!("{}  {}", id_style(&thread.id), safe::line(&thread.title));
-                }
-                render(&pruned, 0, None);
+                render_tree(&posts, &id, top_depth);
                 if clipped > 0 {
                     println!(
                         "{}",
@@ -174,8 +187,8 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
                     .iter()
                     .map(|r| {
                         json!({
-                            "id": r.thread_id,
-                            "title": r.thread_title,
+                            "id": r.id,
+                            "title": r.summary,
                             "author": r.author,
                             "labels": r.labels,
                             "posts": total_of(&r.thread_id),
@@ -188,7 +201,7 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
                 out.line("no threads yet - start one with `wipe forum post`");
             } else {
                 for r in &roots {
-                    let n = total_of(&r.thread_id);
+                    let n = total_of(&r.id);
                     let labels = if r.labels.is_empty() {
                         String::new()
                     } else {
@@ -196,8 +209,8 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
                     };
                     println!(
                         "{}  {}  {}",
-                        id_style(&r.thread_id),
-                        crate::view::title(&r.thread_title),
+                        id_style(&r.id),
+                        crate::view::title(&r.summary),
                         dim(&format!(
                             "({labels}{}{})",
                             safe::line(&r.author),
@@ -244,7 +257,7 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
                 // Same guardrails as the text view: clean, clipped bodies.
                 let mut v = to_value(&hits);
                 for h in v.as_array_mut().into_iter().flatten() {
-                    for key in ["body", "thread_title", "title"] {
+                    for key in ["body", "thread_title", "summary"] {
                         if let Some(text) = h.get(key).and_then(Value::as_str) {
                             let clean = if key == "body" {
                                 safe::clip(text, POST_MAX).0
@@ -266,11 +279,12 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
                         format!(" {}", dim(&format!("[{}]", h.labels.join(","))))
                     };
                     println!(
-                        "{}  {}{}  {}",
+                        "{}  {}{}  {}  {}",
                         id_style(&h.id),
                         dim(&h.author),
                         labels,
-                        snippet(&h.body)
+                        crate::view::title(&h.summary),
+                        dim(&snippet(&h.body))
                     );
                 }
                 println!(
@@ -285,19 +299,22 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
 
         ForumCmd::Edit {
             id,
+            summary,
             body,
             body_file,
             author,
         } => {
             let body = input::text(body, body_file.as_deref(), "the new body")?;
-            if body.is_none() && author.is_none() {
+            if body.is_none() && summary.is_none() && author.is_none() {
                 bail!(
-                    "nothing to change - pass --body <TEXT> (or --body-file) and/or --author <ID>"
+                    "nothing to change - pass --summary <TEXT>, --body <TEXT> (or --body-file) \
+                     and/or --author <ID>"
                 );
             }
             let now = Utc::now();
-            if let Some(body) = &body {
-                forum::edit_post(&s, &id, body, now)?;
+            let id = forum::resolve_post_id(&s, &id)?;
+            if body.is_some() || summary.is_some() {
+                forum::edit_post(&s, &id, body.as_deref(), summary.as_deref(), now)?;
             }
             if let Some(new_author) = &author {
                 let old = forum::reattribute_post(&s, &id, new_author, now)?;
@@ -314,9 +331,15 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
             if !yes {
                 bail!("refusing to delete {id} and its replies without --yes");
             }
+            let id = forum::resolve_post_id(&s, &id)?;
+            let threads = s.load_board()?.forum == wipe_core::model::ForumFormat::Threads;
             forum::delete_post(&s, &id, Utc::now())?;
             out.ok(
-                format!("deleted {id} and its replies"),
+                if threads {
+                    format!("deleted {id} and its replies")
+                } else {
+                    format!("deleted {id} (replies to it stay)")
+                },
                 json!({ "ok": true, "id": id }),
             );
         }
@@ -334,6 +357,17 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
             bail!(
                 "only whole threads can be pinned - use the thread id (e.g. {})",
                 id.split('.').next().unwrap_or(&id)
+            );
+        }
+        ForumCmd::Pin { id } | ForumCmd::Unpin { id }
+            if forum::get_post(&s, &id).is_ok_and(|p| p.depth > 0) =>
+        {
+            let p = forum::get_post(&s, &id)?;
+            bail!(
+                "only whole threads can be pinned - {} replies to {}; pin its thread, {}",
+                p.id,
+                p.parents.join(", "),
+                p.thread_id
             );
         }
         ForumCmd::Pin { id } => {
@@ -382,39 +416,40 @@ pub fn run(out: &Out, cmd: ForumCmd) -> Result<()> {
 const PIN_LABEL: &str = "pinned";
 
 /// Build the Markdown digest of threads labeled `label`: per thread a heading,
-/// the root post, and one line per reply - oldest thread first, each thread's
+/// the opening post, and one line per reply - oldest thread first, each thread's
 /// share of `max_bytes` capped so one long thread cannot crowd out the rest.
 fn digest(s: &Store, label: &str, max_bytes: usize) -> Result<String> {
-    let threads: Vec<_> = s
-        .load_all_threads()?
-        .into_iter()
-        .filter(|t| t.root.labels.iter().any(|l| l == label))
-        .collect();
+    let threads = forum::labeled_threads(s, label)?;
     let mut out = format!("# Project notes (wipe forum, label `{label}`)\n\n");
     if threads.is_empty() {
         out.push_str(&format!(
-            "_No threads labeled `{label}` yet - pin one with `wipe forum pin F-<n>`._\n"
+            "_No threads labeled `{label}` yet - pin one with `wipe forum pin F-<id>`._\n"
         ));
         return Ok(out);
     }
     let footer = "\n_Full threads: `wipe forum show <id>`._\n";
     let budget = max_bytes.saturating_sub(out.len() + footer.len());
     let share = (budget / threads.len()).max(200);
-    for t in &threads {
-        let mut sec = format!("## {} - {}\n\n{}\n", t.id, t.title, t.root.body.trim());
-        let mut replies = Vec::new();
-        t.root.walk(0, &mut |p, depth| {
-            if depth > 0 {
-                replies.push(format!("- {} ({}): {}", p.id, p.author, snippet(&p.body)));
-            }
-        });
+    for (root, replies) in &threads {
+        let mut sec = format!(
+            "## {} - {}\n\n{}\n",
+            root.id,
+            root.summary,
+            root.body.trim()
+        );
         if !replies.is_empty() {
             sec.push('\n');
-            sec.push_str(&replies.join("\n"));
-            sec.push('\n');
+            for p in replies {
+                sec.push_str(&format!(
+                    "- {} ({}): {}\n",
+                    p.id,
+                    p.author,
+                    safe::line(&p.summary)
+                ));
+            }
         }
         sec.push('\n');
-        out.push_str(&clip(&sec, share, &t.id));
+        out.push_str(&clip(&sec, share, &root.id));
     }
     out.push_str(footer);
     // Hard cap: the per-thread floor can overshoot when there are many threads.
@@ -443,18 +478,21 @@ fn clip(text: &str, max: usize, id: &str) -> String {
     format!("{}…{more}\n\n", text[..end].trim_end())
 }
 
-/// Clone a post, keeping replies only down to `max_depth` levels below it (same
-/// bound `render` applies): `Some(0)` drops all replies, `None` keeps the whole
-/// subtree. Used so `forum show --json --depth N` returns a bounded tree.
-fn prune_depth(post: &Post, max_depth: Option<usize>) -> Post {
-    let mut out = post.clone();
-    if max_depth == Some(0) {
-        out.replies = Vec::new();
-    } else {
-        let next = max_depth.map(|d| d - 1);
-        out.replies = post.replies.iter().map(|r| prune_depth(r, next)).collect();
+/// The ids of the posts at most `max_depth` replies below `top`, following
+/// first parents (how [`render_tree`] nests them).
+fn tree_within(posts: &[PostView], top: &str, max_depth: usize) -> HashSet<String> {
+    let mut keep: HashSet<String> = HashSet::from([top.to_string()]);
+    let mut frontier = vec![top.to_string()];
+    for _ in 0..max_depth {
+        let next: Vec<String> = posts
+            .iter()
+            .filter(|p| p.parents.first().is_some_and(|f| frontier.contains(f)))
+            .map(|p| p.id.clone())
+            .collect();
+        keep.extend(next.iter().cloned());
+        frontier = next;
     }
-    out
+    keep
 }
 
 /// Ticket refs in their canonical spelling (`t2a` -> `T-02A`, an old `T-42`
@@ -465,49 +503,78 @@ fn canonical_refs(s: &Store, refs: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Sanitize every body in the tree and (unless `full`) clip long ones.
+/// Sanitize every body (and summary) and, unless `full`, clip long bodies.
 /// Returns how many were clipped.
-fn clean_tree(post: &mut Post, full: bool) -> usize {
+fn clean_posts(posts: &mut [PostView], full: bool) -> usize {
     let mut clipped = 0;
-    if full {
-        post.body = safe::clean(&post.body).into_owned();
-    } else {
-        let (body, cut) = safe::clip(&post.body, POST_MAX);
-        post.body = if cut > 0 {
-            clipped += 1;
-            format!("{body}\n… {cut} more chars")
+    for p in posts {
+        p.summary = safe::line(&p.summary);
+        if full {
+            p.body = safe::clean(&p.body).into_owned();
         } else {
-            body
-        };
-    }
-    for r in &mut post.replies {
-        clipped += clean_tree(r, full);
+            let (body, cut) = safe::clip(&p.body, POST_MAX);
+            p.body = if cut > 0 {
+                clipped += 1;
+                format!("{body}\n… {cut} more chars")
+            } else {
+                body
+            };
+        }
     }
     clipped
 }
 
-/// Render a post and (bounded by `max_depth`) its reply subtree as an indented tree.
-fn render(post: &Post, level: usize, max_depth: Option<usize>) {
-    let pad = "  ".repeat(level);
-    let labels = if post.labels.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", dim(&format!("[{}]", post.labels.join(","))))
-    };
-    println!(
-        "{pad}{} {}{}",
-        id_style(&post.id),
-        dim(&safe::line(&post.author)),
-        labels
-    );
-    for line in post.body.lines() {
-        println!("{pad}  {line}");
-    }
-    if max_depth.is_none_or(|m| level < m) {
-        for r in &post.replies {
-            render(r, level + 1, max_depth);
+/// Render `top` and the posts under it as an indented tree: each post nests
+/// under its first parent (other parents are named on its header line).
+fn render_tree(posts: &[PostView], top: &str, top_depth: usize) {
+    fn node(posts: &[PostView], p: &PostView, level: usize, seen: &mut HashSet<String>) {
+        if !seen.insert(p.id.clone()) {
+            return;
+        }
+        let pad = "  ".repeat(level);
+        let labels = if p.labels.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", dim(&format!("[{}]", p.labels.join(","))))
+        };
+        let also = if p.parents.len() > 1 {
+            format!(
+                " {}",
+                dim(&format!("(also replies to {})", p.parents[1..].join(", ")))
+            )
+        } else {
+            String::new()
+        };
+        println!(
+            "{pad}{}  {}  {}{labels}{also}",
+            id_style(&p.id),
+            crate::view::title(&p.summary),
+            dim(&safe::line(&p.author)),
+        );
+        for line in p.body.lines() {
+            println!("{pad}  {line}");
+        }
+        for c in posts
+            .iter()
+            .filter(|c| c.parents.first().is_some_and(|f| *f == p.id))
+        {
+            node(posts, c, level + 1, seen);
         }
     }
+    let Some(root) = posts.iter().find(|p| p.id == top) else {
+        return;
+    };
+    if top_depth > 0 {
+        println!(
+            "{}",
+            dim(&format!(
+                "in thread {} - {}",
+                root.thread_id,
+                safe::line(&root.thread_title)
+            ))
+        );
+    }
+    node(posts, root, 0, &mut HashSet::new());
 }
 
 /// Stream new matching posts as newline-delimited JSON until interrupted.
@@ -574,6 +641,8 @@ fn watch(store: &Store, a: ForumWatchArgs) -> Result<()> {
 fn emit(p: &PostView) -> std::io::Result<()> {
     let event = json!({
         "id": p.id,
+        "summary": p.summary,
+        "parents": p.parents,
         "thread": p.thread_id,
         "title": p.thread_title,
         "author": p.author,
