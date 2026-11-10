@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "labels": [
+    {
+      "name": "blocked",
+      "color": "#BF4D43"
+    },
+    {
+      "name": "needs-review",
+      "color": "#61AAF2"
+    },
+    {
+      "name": "agent",
+      "color": "#9A7AA0"
+    }
+  ],
+  "priorities": [
+    "low",
+    "medium",
+    "high",
+    "urgent"
+  ]
+}

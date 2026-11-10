@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "daemon": {
+    "port": 3018,
+    "expose": "local",
+    "autoserve": false,
+    "idle_timeout_secs": 0
+  },
+  "max_attachment_mb": 50,
+  "default_author": "human",
+  "autocommit": false
+}

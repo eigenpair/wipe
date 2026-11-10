@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "34365e15-b503-492d-a246-474c09ec8577",
+  "name": "wipe",
+  "lists": [
+    {
+      "id": "backlog",
+      "name": "Backlog",
+      "cards": []
+    },
+    {
+      "id": "todo",
+      "name": "Todo",
+      "cards": []
+    },
+    {
+      "id": "in-progress",
+      "name": "In Progress",
+      "cards": []
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "cards": []
+    }
+  ],
+  "next_ticket": 1,
+  "ids": "hex",
+  "next_thread": 1,
+  "forum": "posts",
+  "created": "2026-11-10T23:16:52.515875425Z",
+  "updated": "2026-11-10T23:16:52.515875425Z"
+}
