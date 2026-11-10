@@ -240,7 +240,7 @@ pub fn run(out: &Out, a: UpdateArgs) -> Result<()> {
     }
     let now = installed_version(&install.binary).unwrap_or_else(|| "?".into());
     if restart_tray {
-        let _ = vcs::command(&install.binary).arg("tray").spawn();
+        spawn_tray(&install.binary);
     }
     out.ok(
         format!(
@@ -601,6 +601,48 @@ fn cleanup_old(exe: &Path) {
             }
         }
     }
+}
+
+/// Relaunch the tray fully detached: no console, its own process group, no
+/// stdio - and none of this process's handles. Otherwise the tray inherits
+/// whatever `wipe update` writes to (on Windows every inheritable handle goes
+/// along, not only the ones passed as stdio): a shell reading the update's
+/// output through a pipe then waits on the tray, which never exits.
+fn spawn_tray(binary: &std::path::Path) {
+    let mut cmd = Command::new(binary);
+    cmd.arg("tray")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::Foundation::{
+            SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+        };
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        // SAFETY: only clears the inherit flag on this process's own standard
+        // handles; `wipe update` exits right after, writing through them still.
+        unsafe {
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let h = GetStdHandle(which);
+                if !h.is_null() && h != INVALID_HANDLE_VALUE {
+                    SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let _ = cmd.spawn();
 }
 
 #[cfg(test)]

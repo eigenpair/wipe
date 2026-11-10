@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1 - 2026-11-10
+
+- **`wipe update` no longer hangs the shell that ran it.** When it restarts
+  your tray, the tray is now launched fully detached - without the update's
+  output handles. Before, a shell reading the update's output (a script, an
+  agent's command runner, PowerShell redirecting to a file) waited until the
+  tray exited, i.e. forever. Takes effect from the next update on: updating
+  *to* 1.1.1 still runs 1.1.0's updater.
+
 ## 1.1.0 - 2026-11-09
 
 > **Breaking for converted boards:** converting a board (**New ids** in the UI,
