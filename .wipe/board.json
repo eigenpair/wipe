@@ -11,7 +11,9 @@
     {
       "id": "todo",
       "name": "Todo",
-      "cards": []
+      "cards": [
+        "T-001"
+      ]
     },
     {
       "id": "in-progress",
@@ -24,7 +26,7 @@
       "cards": []
     }
   ],
-  "next_ticket": 1,
+  "next_ticket": 2,
   "ids": "hex",
   "next_thread": 1,
   "forum": "posts",
