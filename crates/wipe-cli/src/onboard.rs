@@ -297,7 +297,7 @@ pub fn global_wizard(g: &GlobalConfig) -> Result<GlobalConfig> {
     );
 
     // UI identity: what the board UI (`wipe serve`) credits edits to when the
-    // project VCS reports no user. The CLI never falls back to it - every CLI
+    // project git reports no user. The CLI never falls back to it - every CLI
     // session must choose an identity explicitly (`wipe identity use`).
     let id_default = g
         .default_identity
@@ -307,7 +307,7 @@ pub fn global_wizard(g: &GlobalConfig) -> Result<GlobalConfig> {
     let default_id = Text::new(&step(
         10,
         N,
-        "Identity the board UI credits your edits to when version control reports none",
+        "Identity the board UI credits your edits to when git reports none",
     ))
     .with_default(&id_default)
     .with_help_message("e.g. \"Ada <ada@example.com>\" or just \"human\"")
@@ -324,7 +324,7 @@ pub fn global_wizard(g: &GlobalConfig) -> Result<GlobalConfig> {
         Confirm::new(&step(
             11,
             N,
-            "Always use that identity in the UI, even when version control reports one?",
+            "Always use that identity in the UI, even when git reports one?",
         ))
         .with_default(g.prefer_default_identity.unwrap_or(false))
         .prompt()

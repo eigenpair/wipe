@@ -219,7 +219,7 @@ pub(crate) fn notify(state: &AppState) {
 }
 
 /// Who to attribute a UI-driven mutation to for the activity timeline: an explicit
-/// `actor` from the request if given, else the repo's VCS user (git, Plastic, …),
+/// `actor` from the request if given, else the git user,
 /// the board default, or the configured global default - never "unknown".
 ///
 /// When the daemon is **exposed**, the request's `actor` is *not* trusted: a shared
@@ -635,7 +635,7 @@ pub async fn add_comment(
     Json(b): Json<CommentBody>,
 ) -> ApiResult {
     let store = store_for(&state, pq.project.or(b.project))?;
-    // Resolve like every other authored action (falls back to the repo VCS/board
+    // Resolve like every other authored action (falls back to the git user/board
     // default) instead of stamping the sentinel "ui", so UI comments are attributed
     // to the real identity and render consistently with CLI/forum authorship.
     let author = resolve_actor(&state, &store, b.author);
@@ -956,7 +956,7 @@ pub async fn put_identity(
     Json(b): Json<IdentityBody>,
 ) -> ApiResult {
     let store = store_for(&state, pq.project.or(b.project))?;
-    // A person's identity is their account in version control: only its alias
+    // A person's identity is their git account: only its alias
     // (the display name) can be chosen, and only by that person. Agents belong
     // to the person whose agent they are.
     let me = ops::account(&store).map(|(_, key)| key);
@@ -989,7 +989,7 @@ pub async fn put_identity(
         }
         None if b.kind.as_deref() == Some("human") => {
             return Err(ApiError(anyhow::anyhow!(
-                "people's identities come from version control (git user.email) - \
+                "people's identities come from git (user.email) - \
                  they can't be created here"
             )))
         }
@@ -1014,7 +1014,7 @@ pub async fn delete_identity(
     {
         if i.kind == IdentityKind::Human {
             return Err(ApiError(anyhow::anyhow!(
-                "`{}` is a person's identity (from version control) - it can't be removed",
+                "`{}` is a person's identity (from git) - it can't be removed",
                 i.id
             )));
         }

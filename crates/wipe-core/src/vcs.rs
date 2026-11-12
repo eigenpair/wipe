@@ -1,100 +1,42 @@
-//! Version-control-agnostic identity resolution.
+//! Who is working, from git - and the small process helpers every git call
+//! uses.
 //!
-//! wipe stores its board in a repo, but that repo isn't always git: teams on
-//! Plastic SCM (Unity VCS), Mercurial, SVN, Fossil, or Jujutsu should still get
-//! real attribution instead of "unknown". This module detects the VCS in use and
-//! asks it who the current user is, shelling out to each tool best-effort (a
-//! missing tool or non-repo simply yields `None`, never an error).
+//! wipe supports git and nothing else: identities and the people on a board
+//! come from git (`user.name`/`user.email`, the authors in its history), and
+//! only inside a git repository. A board anywhere else - a plain folder, or a
+//! workspace of another version control such as Plastic SCM - is plain files,
+//! and falls back to the OS account. No other tool is ever asked who you are.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// Hard cap on any VCS probe. A hung tool (e.g. Plastic's `cm whoami` against an
-/// unreachable server) must never block a `wipe` command or a daemon request.
+/// Hard cap on any identity probe, so a hung `git` never blocks a `wipe`
+/// command or a daemon request.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Cap on history walked when discovering authors, so large repos stay fast.
 const AUTHOR_SCAN_LIMIT: &str = "2000";
 
-/// A recognized version-control system hosting the repo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Vcs {
-    Git,
-    /// Plastic SCM / Unity Version Control (`cm`).
-    Plastic,
-    Mercurial,
-    Svn,
-    Fossil,
-    Jujutsu,
-    /// No recognized VCS at or above the path.
-    None,
-}
-
-impl Vcs {
-    /// Short, stable machine name (e.g. for `--json` / diagnostics).
-    pub fn name(self) -> &'static str {
-        match self {
-            Vcs::Git => "git",
-            Vcs::Plastic => "plastic",
-            Vcs::Mercurial => "mercurial",
-            Vcs::Svn => "svn",
-            Vcs::Fossil => "fossil",
-            Vcs::Jujutsu => "jujutsu",
-            Vcs::None => "none",
-        }
-    }
-}
-
-/// Walk up from `start` looking for a VCS marker. The first match wins; `.git`
-/// and `.plastic` are checked together at each level so a nested layout resolves
-/// to the closest enclosing workspace.
-pub fn detect(start: &Path) -> Vcs {
+/// Whether `start` is inside a git repository (a `.git` directory, or the
+/// `.git` file of a worktree or submodule, at or above it).
+pub fn in_git(start: &Path) -> bool {
     let abs = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
-    let mut cur: Option<PathBuf> = Some(abs);
-    while let Some(dir) = cur {
-        // Marker directories.
-        for (marker, vcs) in [
-            (".git", Vcs::Git),
-            (".plastic", Vcs::Plastic),
-            (".hg", Vcs::Mercurial),
-            (".svn", Vcs::Svn),
-            (".jj", Vcs::Jujutsu),
-        ] {
-            if dir.join(marker).exists() {
-                return vcs;
-            }
-        }
-        // Fossil uses a checkout marker file rather than a directory.
-        if dir.join(".fslckout").exists() || dir.join("_FOSSIL_").exists() {
-            return Vcs::Fossil;
-        }
-        cur = dir.parent().map(Path::to_path_buf);
-    }
-    Vcs::None
+    abs.ancestors().any(|d| d.join(".git").exists())
 }
 
-/// The current user's identity as reported by the repo's VCS (`Name <email>` when
-/// available), or `None` if there's no VCS, the tool is missing, or it's unset.
+/// The current user's git identity (`Name <email>`), or `None` outside a git
+/// repository or when git has none set.
 pub fn identity(start: &Path) -> Option<String> {
-    match detect(start) {
-        Vcs::Git => git_identity(start),
-        Vcs::Plastic => plastic_identity(start),
-        Vcs::Mercurial => hg_identity(start),
-        Vcs::Fossil => fossil_identity(start),
-        Vcs::Jujutsu => jj_identity(start),
-        // SVN has no reliable "current user" query; fall back to the OS user.
-        Vcs::Svn | Vcs::None => None,
-    }
+    in_git(start).then(|| git_identity(start)).flatten()
 }
 
-/// Distinct historical authors as `(name, email)`, best-effort. Only git and
-/// Mercurial expose this cheaply; others return an empty list.
+/// Distinct authors in the git history as `(name, email)`; empty outside git.
 pub fn authors(start: &Path) -> Vec<(String, String)> {
-    match detect(start) {
-        Vcs::Git => git_authors(start),
-        Vcs::Mercurial => hg_authors(start),
-        _ => Vec::new(),
+    if in_git(start) {
+        git_authors(start)
+    } else {
+        Vec::new()
     }
 }
 
@@ -160,14 +102,6 @@ fn output_in(dir: &Path, program: &str, args: &[&str]) -> Option<String> {
     run_timed(cmd)
 }
 
-/// Run a command that takes its working directory via `current_dir` (tools
-/// without a `-C` flag), returning trimmed stdout on success.
-fn output_cwd(dir: &Path, program: &str, args: &[&str]) -> Option<String> {
-    let mut cmd = command(program);
-    cmd.current_dir(plain(dir)).args(args);
-    run_timed(cmd)
-}
-
 fn finish(out: std::process::Output) -> Option<String> {
     if !out.status.success() {
         return None;
@@ -221,64 +155,16 @@ fn git_authors(root: &Path) -> Vec<(String, String)> {
     authors
 }
 
-fn plastic_identity(root: &Path) -> Option<String> {
-    // `cm whoami` prints the current Plastic user (often an email-like seid).
-    output_cwd(root, "cm", &["whoami"])
-}
-
-fn hg_identity(root: &Path) -> Option<String> {
-    // `hg config ui.username` yields a ready-made "Name <email>".
-    output_in(root, "hg", &["config", "ui.username"])
-}
-
-fn hg_authors(root: &Path) -> Vec<(String, String)> {
-    let Some(out) = output_in(
-        root,
-        "hg",
-        &["log", "-l", AUTHOR_SCAN_LIMIT, "--template", "{author}\n"],
-    ) else {
-        return Vec::new();
-    };
-    let mut seen = std::collections::HashSet::new();
-    let mut authors = Vec::new();
-    for line in out.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // "Name <email>" → split; otherwise treat the whole thing as the name.
-        let (name, email) = match (line.find('<'), line.find('>')) {
-            (Some(a), Some(b)) if b > a => {
-                (line[..a].trim().to_string(), line[a + 1..b].to_string())
-            }
-            _ => (line.to_string(), line.to_string()),
-        };
-        if seen.insert(email.clone()) {
-            authors.push((name, email));
-        }
-    }
-    authors
-}
-
-fn fossil_identity(root: &Path) -> Option<String> {
-    output_cwd(root, "fossil", &["user", "default"])
-}
-
-fn jj_identity(root: &Path) -> Option<String> {
-    let name = output_cwd(root, "jj", &["config", "get", "user.name"]);
-    let email = output_cwd(root, "jj", &["config", "get", "user.email"]);
-    combine(name, email)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn detects_git_and_its_identity() {
+    fn identity_comes_from_git_only() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert_eq!((detect(root), identity(root)), (Vcs::None, None));
+        assert!(!in_git(root));
+        assert_eq!(identity(root), None);
         let git = |args: &[&str]| {
             Command::new("git")
                 .arg("-C")
@@ -290,10 +176,21 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.name", "Ada Lovelace"]);
         git(&["config", "user.email", "ada@example.com"]);
-        assert_eq!(detect(root), Vcs::Git);
+        assert!(in_git(root));
         assert_eq!(
             identity(root).as_deref(),
             Some("Ada Lovelace <ada@example.com>")
         );
+    }
+
+    /// Another version control's workspace is not git: no identity from it.
+    #[test]
+    fn other_version_control_is_not_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".plastic")).unwrap();
+        std::fs::create_dir(dir.path().join(".hg")).unwrap();
+        assert!(!in_git(dir.path()));
+        assert_eq!(identity(dir.path()), None);
+        assert!(authors(dir.path()).is_empty());
     }
 }

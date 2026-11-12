@@ -102,10 +102,6 @@ pub struct Status {
     pub rewritten: bool,
     /// When the remote was last fetched.
     pub fetched: Option<DateTime<Utc>>,
-    /// Outside git ([`Mode::None`]): the version control the board's files
-    /// travel with instead (`plastic`, `mercurial`, ...), if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vcs: Option<String>,
 }
 
 impl Status {
@@ -123,47 +119,18 @@ impl Status {
             unpublished: 0,
             rewritten: false,
             fetched: None,
-            vcs: None,
         }
     }
 }
 
-/// The version control hosting a board outside git, when there is one.
-fn host_vcs(store: &Store) -> Option<crate::vcs::Vcs> {
-    match crate::vcs::detect(store.root()) {
-        crate::vcs::Vcs::None | crate::vcs::Vcs::Git => None,
-        v => Some(v),
-    }
-}
-
-/// A version control's display name (`Plastic SCM / Unity Version Control`).
-pub fn vcs_label(name: &str) -> &'static str {
-    match name {
-        "plastic" => "Unity Version Control (Plastic SCM)",
-        "mercurial" => "Mercurial",
-        "svn" => "Subversion",
-        "fossil" => "Fossil",
-        "jujutsu" => "Jujutsu",
-        _ => "version control",
-    }
-}
-
-/// How a board outside git is shared, in one line: it has no wipe branch, so
-/// its files travel with the code in whatever version control hosts them.
-pub fn plain_files_note(vcs: Option<&str>) -> String {
-    match vcs {
-        Some(v) => format!(
-            "{} workspace - the board is plain files in .wipe/ that travel with your {}; check them in with your code (the wipe branch, `wipe commit`/`sync`/`log`, needs git)",
-            vcs_label(v),
-            if v == "plastic" || v == "svn" { "checkins" } else { "commits" },
-        ),
-        None => "not under version control - the board is plain files in .wipe/ (the wipe branch, `wipe commit`/`sync`/`log`, needs git)".to_string(),
-    }
-}
+/// What a board outside git is, in one line: plain files, with none of the
+/// wipe branch's features. wipe supports git only - a workspace of any other
+/// version control is the same as a plain folder.
+pub const PLAIN_FILES: &str = "not a git repository - the board is plain files in .wipe/, without commit, sync or history (those need the wipe branch, in a git repo)";
 
 /// The error for a branch command on a board outside git.
-fn no_branch(store: &Store) -> String {
-    plain_files_note(host_vcs(store).map(|v| v.name()))
+fn no_branch(_store: &Store) -> String {
+    PLAIN_FILES.to_string()
 }
 
 /// Per-board sync bookkeeping, in the gitignored cache.
@@ -578,10 +545,7 @@ pub fn status(store: &Store) -> Result<Status> {
     );
     let st = match &repo {
         Some(repo) => compute_status(store, repo, &state, &work)?,
-        None => Status {
-            vcs: host_vcs(store).map(|v| v.name().to_string()),
-            ..Status::bare(Mode::None)
-        },
+        None => Status::bare(Mode::None),
     };
     let _ = crate::store::write_json_atomic(
         &cache_path,

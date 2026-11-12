@@ -36,7 +36,7 @@ pub struct Cli {
     pub cwd: Option<PathBuf>,
 
     /// Author authored actions as this identity for this command (typically an
-    /// agent id). Overrides the session/VCS identity; see `wipe identity`.
+    /// agent id). Overrides the session/git identity; see `wipe identity`.
     #[arg(long = "agentid", global = true, value_name = "ID", hide = true)]
     pub agentid: Option<String>,
 
@@ -450,7 +450,7 @@ pub struct OnboardArgs {
 /// `wipe identity ...`
 #[derive(Debug, Subcommand)]
 pub enum IdentityCmd {
-    /// List available identities (registry + VCS), marking the active one.
+    /// List available identities (registry + git authors), marking the active one.
     ///
     /// Agents: run this FIRST to see whether an identity for you already exists
     /// before creating a new one with `wipe identity use`.

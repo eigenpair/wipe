@@ -143,13 +143,6 @@
     void closeSync();
   }
 
-  function vcsLabel(v: string): string {
-    return ({ plastic: 'Unity VCS', mercurial: 'Mercurial', svn: 'SVN', fossil: 'Fossil', jujutsu: 'Jujutsu' } as Record<string, string>)[v] ?? v;
-  }
-  function plainNote(v: string): string {
-    return `${vcsLabel(v)} workspace: the board is plain files in .wipe/ - check them in with your code to share it. Commit, sync and history (the wipe branch) need git.`;
-  }
-
   function fetchedAgo(): string {
     if (!st?.fetched) return 'not fetched yet';
     return `fetched ${formatDate(st.fetched)}`;
@@ -377,10 +370,13 @@
       </div>
     {/if}
   </div>
-{:else if $health && st && st.mode === 'none' && st.vcs}
+{:else if $health && st && st.mode === 'none'}
   <div class="sync">
-    <span class="pill static plain" title={plainNote(st.vcs)}>
-      <GitBranch size={13} /> Board travels with your {vcsLabel(st.vcs)} {st.vcs === 'plastic' || st.vcs === 'svn' ? 'checkins' : 'commits'}
+    <span
+      class="pill static plain"
+      title="This board isn't in a git repository, so it is plain files in .wipe/ - no commit, sync or history. In a git repo it lives on the wipe branch."
+    >
+      <GitBranch size={13} /> Not in git: no sync or history
     </span>
   </div>
 {/if}

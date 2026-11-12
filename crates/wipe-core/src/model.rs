@@ -819,7 +819,7 @@ pub struct Settings {
     #[serde(default = "default_max_attachment_mb")]
     pub max_attachment_mb: u64,
     /// Fallback author for this board when neither an explicit override nor the
-    /// repo's VCS supplies an identity. Captured at `wipe init` from the VCS (or
+    /// repo's git supplies an identity. Captured at `wipe init` from git (or
     /// the global default), so attribution is never "unknown".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_author: Option<String>,

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.3 - unreleased
+
+- **wipe supports git, and only git.** Identities and the people on a board
+  come from git alone, and only inside a git repository; wipe no longer asks
+  Plastic SCM, Mercurial, SVN, Fossil or Jujutsu who you are. Their user
+  names didn't match your git identity, so a board moved from one of them to
+  git ended up with the same person (or their agents) twice. Outside git a
+  board is plain files, whatever hosts the folder: `wipe doctor`, the board's
+  top bar and history say so in one line, and the Plastic-specific notes and
+  `ignore.conf` check from 1.1.2 are gone - ignoring `.wipe/` in another
+  version control is up to you.
+- To keep a board's history and sync in a project that lives in another
+  version control, give it a small git repo of its own in the same folder (a
+  `.gitignore` of `/*` and `!/.gitignore`), run `wipe migrate`, and stop the
+  other version control from tracking `.wipe/`.
+
 ## 1.1.2 - 2026-11-12
 
 - **What's new, built in.** `wipe changelog` prints the release notes of the

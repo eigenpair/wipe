@@ -840,7 +840,7 @@ pub fn delete_label(store: &Store, name: &str, now: DateTime<Utc>) -> Result<()>
 }
 
 /// List identities: the saved registry merged with human authors discovered from
-/// the repo's VCS (git, Mercurial, …) so contributors show up without manual
+/// the git history so contributors show up without manual
 /// setup. Ids are unique (see [`normalize_identities`]).
 pub fn list_identities(store: &Store) -> Result<Vec<Identity>> {
     let mut registry = store.load_identities()?;
@@ -864,7 +864,7 @@ pub fn list_identities(store: &Store) -> Result<Vec<Identity>> {
     Ok(registry)
 }
 
-/// The person working in this repository, from its version control: `(name,
+/// The person working in this repository, from git: `(name,
 /// key)`, the key being their email (the id of their human identity) or, with
 /// no email configured, their name. Agents act for this account.
 pub fn account(store: &Store) -> Option<(String, String)> {
@@ -1060,9 +1060,9 @@ pub fn agent_for(store: &Store, requested: &str, owner: Option<&str>) -> String 
         .unwrap_or_else(|| requested.to_string())
 }
 
-/// Resolve the acting identity for an authored action, VCS-agnostic and honoring
+/// Resolve the acting identity for an authored action, honoring
 /// the user's default-identity preference. Precedence:
-/// explicit → (prefer-default) → VCS user → board default → global default →
+/// explicit → (prefer-default) → git user → board default → global default →
 /// system user → `"unknown"`. Session/env overrides are layered on by the CLI.
 pub fn resolve_identity(store: Option<&Store>, explicit: Option<&str>) -> String {
     if let Some(e) = explicit.map(str::trim).filter(|s| !s.is_empty()) {

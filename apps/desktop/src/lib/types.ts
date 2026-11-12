@@ -285,9 +285,6 @@ export interface SyncStatus {
   rewritten: boolean;
   fetched: string | null;
   fetch_error?: string;
-  /** With mode `none`: the version control the board's files travel with
-   *  instead of the wipe branch (`plastic`, `mercurial`, ...). */
-  vcs?: string;
 }
 
 export type SyncSide = 'ours' | 'theirs';

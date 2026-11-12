@@ -84,7 +84,7 @@ pub fn init(out: &Out, args: InitArgs) -> Result<()> {
     settings.daemon.idle_timeout_secs = plan.idle_timeout_secs;
     // The board's shared fallback author must be GENERIC, not the creator's personal
     // identity: settings.json is git-tracked, so baking a specific person in would
-    // misattribute every collaborator whose VCS reports no user. Each user's own VCS
+    // misattribute every collaborator whose git reports no user. Each user's own git
     // identity is resolved at runtime and takes precedence over this fallback.
     settings.default_author = Some(
         g.default_identity
@@ -2506,33 +2506,6 @@ pub(crate) fn via_npm_shim() -> bool {
     std::env::var_os("WIPE_NPM_SHIM").is_some()
 }
 
-/// In a Plastic workspace the board travels with checkins, but its runtime
-/// cache (`.wipe/.cache`) must not: warn when `ignore.conf` doesn't keep it out.
-fn plastic_ignore_warning(store: &Store) -> Option<String> {
-    let root = store.root();
-    let ws = root.ancestors().find(|d| d.join(".plastic").is_dir())?;
-    let conf = std::fs::read_to_string(ws.join("ignore.conf")).unwrap_or_default();
-    let rel = root
-        .strip_prefix(ws)
-        .ok()?
-        .to_string_lossy()
-        .replace('\\', "/");
-    let cache = if rel.is_empty() {
-        ".wipe/.cache".to_string()
-    } else {
-        format!("{rel}/.wipe/.cache")
-    };
-    let ignored = conf.lines().map(str::trim).any(|l| {
-        let l = l.trim_start_matches('/').trim_end_matches('/');
-        l == cache || l == ".wipe/.cache" || l == ".cache"
-    });
-    (!ignored).then(|| {
-        format!(
-            "the board's cache isn't in Plastic's ignore.conf - add `/{cache}` there so its lock and cache files aren't checked in"
-        )
-    })
-}
-
 /// `wipe doctor`
 pub fn doctor(out: &Out) -> Result<()> {
     let in_board = Store::discover(".").ok();
@@ -2540,7 +2513,7 @@ pub fn doctor(out: &Out) -> Result<()> {
     let author = identity::resolve_opt(None);
     let author_source = identity::source(None);
     let session = identity::session_key().is_some();
-    let detected = vcs::detect(std::path::Path::new("."));
+    let in_git = vcs::in_git(std::path::Path::new("."));
     let (board_name, tickets) = match &in_board {
         Some(s) => (Some(s.load_board()?.name), s.ticket_ids()?.len()),
         None => (None, 0),
@@ -2579,11 +2552,6 @@ pub fn doctor(out: &Out) -> Result<()> {
                 "this checkout still tracks {}/ - `wipe migrate` untracks it here",
                 st.board_dir
             )),
-            wipe_core::sync::Mode::None => {
-                if let Some(w) = in_board.as_ref().and_then(plastic_ignore_warning) {
-                    warnings.push(w);
-                }
-            }
             _ => {}
         }
         if !st.local.is_empty() {
@@ -2606,7 +2574,7 @@ pub fn doctor(out: &Out) -> Result<()> {
             "board": board_name,
             "tickets": tickets,
             "git_available": git,
-            "vcs": detected.name(),
+            "vcs": if in_git { "git" } else { "none" },
             "identity": author,
             "identity_source": author_source,
             "session_detected": session,
@@ -2614,9 +2582,8 @@ pub fn doctor(out: &Out) -> Result<()> {
             "binary": exe,
             "sync": sync.as_ref().map(|st| json!({
                 "mode": st.mode,
-                "vcs": st.vcs,
                 "note": (st.mode == wipe_core::sync::Mode::None)
-                    .then(|| wipe_core::sync::plain_files_note(st.vcs.as_deref())),
+                    .then_some(wipe_core::sync::PLAIN_FILES),
                 "remote": st.remote,
                 "uncommitted": st.local.len(),
                 "incoming": st.incoming.len(),
@@ -2636,13 +2603,19 @@ pub fn doctor(out: &Out) -> Result<()> {
                 .unwrap_or_default()
         );
         println!("{} git available", mark(git));
-        println!("  vcs: {}", detected.name());
+        println!(
+            "  git repo: {}",
+            if in_git {
+                "yes"
+            } else {
+                "no - the board is plain files"
+            }
+        );
         if let Some(st) = &sync {
             match st.mode {
-                wipe_core::sync::Mode::None => println!(
-                    "  board sync: {}",
-                    wipe_core::sync::plain_files_note(st.vcs.as_deref())
-                ),
+                wipe_core::sync::Mode::None => {
+                    println!("  board sync: {}", wipe_core::sync::PLAIN_FILES)
+                }
                 wipe_core::sync::Mode::Branch => println!(
                     "  board sync: wipe branch{}",
                     st.remote

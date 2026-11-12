@@ -47,12 +47,12 @@ pub struct GlobalConfig {
     /// Preferred UI theme: `light`, `dark`, or `system`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_theme: Option<String>,
-    /// Fallback identity used when a project's VCS reports no user (mandatory in
+    /// Fallback identity used when a project's git reports no user (mandatory in
     /// practice: onboarding sets it, defaulting to `human`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_identity: Option<String>,
-    /// Always attribute actions to [`default_identity`] instead of the VCS-reported
-    /// user, even when the VCS does report one.
+    /// Always attribute actions to [`default_identity`] instead of the git-reported
+    /// user, even when git does report one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_default_identity: Option<bool>,
     /// Directories scanned for `.wipe` boards (so serving surfaces every board you

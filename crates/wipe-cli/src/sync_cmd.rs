@@ -294,7 +294,7 @@ fn report_status(out: &Out, st: &sync::Status) -> Result<()> {
     }
     match st.mode {
         Mode::None => {
-            println!("{}", sync::plain_files_note(st.vcs.as_deref()));
+            println!("{}", sync::PLAIN_FILES);
             return Ok(());
         }
         Mode::Unmigrated => {
@@ -444,7 +444,6 @@ pub fn overview(store: &Store) -> Option<(Vec<String>, Value)> {
     sync::fetch_in_background(store);
     let v = json!({
         "mode": st.mode,
-        "vcs": st.vcs,
         "uncommitted": st.local.len(),
         "incoming": st.incoming.len(),
         "unpublished": st.unpublished,
