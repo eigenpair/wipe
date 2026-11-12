@@ -139,6 +139,8 @@ pub enum Command {
     Doctor,
     /// Update wipe through the channel it was installed with (npm, installer, cargo).
     Update(UpdateArgs),
+    /// What changed in each version of wipe (newest first).
+    Changelog(ChangelogArgs),
     /// Pin a directory to a development build of wipe (for testing in a sandbox).
     #[command(subcommand)]
     Dev(DevCmd),
@@ -160,6 +162,22 @@ pub enum Command {
         /// Target shell.
         shell: clap_complete::Shell,
     },
+}
+
+/// `wipe changelog`
+#[derive(Debug, Args)]
+pub struct ChangelogArgs {
+    /// Show just this version (`1.0.0`).
+    pub version: Option<String>,
+    /// Show every version newer than this one (e.g. the one you came from).
+    #[arg(long, conflicts_with = "version")]
+    pub since: Option<String>,
+    /// How many of the newest versions to show.
+    #[arg(short = 'n', long, default_value_t = 3)]
+    pub limit: usize,
+    /// Show the whole changelog.
+    #[arg(long)]
+    pub all: bool,
 }
 
 /// `wipe update`

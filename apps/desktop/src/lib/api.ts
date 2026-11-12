@@ -2,6 +2,7 @@
 import { browser } from '$app/environment';
 import type {
   AppConfig,
+  Changelog,
   Attachment,
   Board,
   ChecksKind,
@@ -169,6 +170,11 @@ export function localFileUrl(path: string): string {
 export const api = {
   health(): Promise<Health> {
     return req<Health>('/api/health');
+  },
+
+  /** wipe's own release notes, newest first. */
+  changelog(): Promise<Changelog> {
+    return req<Changelog>('/api/changelog');
   },
 
   /** User-global defaults (styling + default identity) set via `wipe config --global`. */

@@ -255,6 +255,7 @@ fn dispatch(out: &Out, command: Command) -> anyhow::Result<()> {
         Command::Restore(a) => sync_cmd::restore(out, a),
         Command::Doctor => commands::doctor(out),
         Command::Update(a) => update::run(out, a),
+        Command::Changelog(a) => commands::changelog(out, a),
         Command::Dev(c) => devlink::run(out, c),
         Command::Skill { cmd } => commands::skill(out, cmd),
         Command::Completions { shell } => {

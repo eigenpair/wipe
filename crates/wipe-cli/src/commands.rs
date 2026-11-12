@@ -2506,6 +2506,33 @@ pub(crate) fn via_npm_shim() -> bool {
     std::env::var_os("WIPE_NPM_SHIM").is_some()
 }
 
+/// In a Plastic workspace the board travels with checkins, but its runtime
+/// cache (`.wipe/.cache`) must not: warn when `ignore.conf` doesn't keep it out.
+fn plastic_ignore_warning(store: &Store) -> Option<String> {
+    let root = store.root();
+    let ws = root.ancestors().find(|d| d.join(".plastic").is_dir())?;
+    let conf = std::fs::read_to_string(ws.join("ignore.conf")).unwrap_or_default();
+    let rel = root
+        .strip_prefix(ws)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let cache = if rel.is_empty() {
+        ".wipe/.cache".to_string()
+    } else {
+        format!("{rel}/.wipe/.cache")
+    };
+    let ignored = conf.lines().map(str::trim).any(|l| {
+        let l = l.trim_start_matches('/').trim_end_matches('/');
+        l == cache || l == ".wipe/.cache" || l == ".cache"
+    });
+    (!ignored).then(|| {
+        format!(
+            "the board's cache isn't in Plastic's ignore.conf - add `/{cache}` there so its lock and cache files aren't checked in"
+        )
+    })
+}
+
 /// `wipe doctor`
 pub fn doctor(out: &Out) -> Result<()> {
     let in_board = Store::discover(".").ok();
@@ -2552,6 +2579,11 @@ pub fn doctor(out: &Out) -> Result<()> {
                 "this checkout still tracks {}/ - `wipe migrate` untracks it here",
                 st.board_dir
             )),
+            wipe_core::sync::Mode::None => {
+                if let Some(w) = in_board.as_ref().and_then(plastic_ignore_warning) {
+                    warnings.push(w);
+                }
+            }
             _ => {}
         }
         if !st.local.is_empty() {
@@ -2582,6 +2614,9 @@ pub fn doctor(out: &Out) -> Result<()> {
             "binary": exe,
             "sync": sync.as_ref().map(|st| json!({
                 "mode": st.mode,
+                "vcs": st.vcs,
+                "note": (st.mode == wipe_core::sync::Mode::None)
+                    .then(|| wipe_core::sync::plain_files_note(st.vcs.as_deref())),
                 "remote": st.remote,
                 "uncommitted": st.local.len(),
                 "incoming": st.incoming.len(),
@@ -2602,6 +2637,22 @@ pub fn doctor(out: &Out) -> Result<()> {
         );
         println!("{} git available", mark(git));
         println!("  vcs: {}", detected.name());
+        if let Some(st) = &sync {
+            match st.mode {
+                wipe_core::sync::Mode::None => println!(
+                    "  board sync: {}",
+                    wipe_core::sync::plain_files_note(st.vcs.as_deref())
+                ),
+                wipe_core::sync::Mode::Branch => println!(
+                    "  board sync: wipe branch{}",
+                    st.remote
+                        .as_deref()
+                        .map(|r| format!(" ({r}/{})", st.branch))
+                        .unwrap_or_else(|| " (local only, no remote)".into())
+                ),
+                _ => {}
+            }
+        }
         match &author {
             Some(a) => println!(
                 "{} identity: {a}  {}",
@@ -2623,6 +2674,97 @@ pub fn doctor(out: &Out) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `wipe changelog [VERSION] [--since V] [-n N] [--all]`
+pub fn changelog(out: &Out, a: ChangelogArgs) -> Result<()> {
+    use owo_colors::{OwoColorize, Stream};
+    use wipe_core::changelog::{releases, Release};
+    let all = releases();
+    let picked: Vec<Release> = if let Some(v) = &a.version {
+        let v = v.trim().trim_start_matches('v');
+        let r = all
+            .iter()
+            .find(|r| r.version == v)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!("no version {v} in the changelog - `wipe changelog --all` lists them all")
+            })?;
+        vec![r]
+    } else if let Some(since) = &a.since {
+        let since = since.trim().trim_start_matches('v');
+        let at = all
+            .iter()
+            .position(|r| r.version == since)
+            .ok_or_else(|| anyhow!("no version {since} in the changelog"))?;
+        all[..at].to_vec()
+    } else if a.all {
+        all.clone()
+    } else {
+        all.iter().take(a.limit.max(1)).cloned().collect()
+    };
+    let current = env!("CARGO_PKG_VERSION");
+    if out.json {
+        out.json_value(&json!({
+            "current": current,
+            "releases": picked,
+            "total": all.len(),
+        }));
+        return Ok(());
+    }
+    for (i, r) in picked.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let v = r
+            .version
+            .if_supports_color(Stream::Stdout, |t| t.bold().to_string())
+            .to_string();
+        let mut meta = format!("- {}", r.date.as_deref().unwrap_or("unreleased"));
+        if r.version == current {
+            meta.push_str("  (this version)");
+        }
+        println!("{v} {}", dim(&meta));
+        println!();
+        for line in r.body.lines() {
+            println!("{}", md_line(line));
+        }
+    }
+    let shown = picked.len();
+    if a.version.is_none() && a.since.is_none() && !a.all && shown < all.len() {
+        println!();
+        println!(
+            "{}",
+            dim(&format!(
+                "{} older versions - `wipe changelog --all`, or `wipe changelog <version>`",
+                all.len() - shown
+            ))
+        );
+    }
+    Ok(())
+}
+
+/// Light terminal styling for a changelog Markdown line: `###` headings and
+/// `**bold**` spans in bold (plain text when color is off).
+fn md_line(line: &str) -> String {
+    use owo_colors::{OwoColorize, Stream};
+    let bold = |s: &str| {
+        s.if_supports_color(Stream::Stdout, |t| t.bold().to_string())
+            .to_string()
+    };
+    if let Some(h) = line.strip_prefix("### ") {
+        return bold(h);
+    }
+    line.split("**")
+        .enumerate()
+        .map(|(i, part)| {
+            if i % 2 == 1 {
+                bold(part)
+            } else {
+                part.to_string()
+            }
+        })
+        .collect()
 }
 
 /// `wipe skill [show|install|path]`

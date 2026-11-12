@@ -1,6 +1,20 @@
 # Changelog
 
-## 1.1.2 - unreleased
+## 1.1.2 - 2026-11-12
+
+- **What's new, built in.** `wipe changelog` prints the release notes of the
+  newest versions (`wipe changelog 1.0.0` for one, `--since 1.0.0` for
+  everything after the version you came from, `--all`, `--json`). In the
+  board, the version badge in the top bar opens the same notes, rendered and
+  filterable. The changelog now goes all the way back to 0.1.0.
+- **Boards in a Plastic workspace say so.** In Unity Version Control (Plastic
+  SCM) - or Mercurial, SVN, Fossil, Jujutsu - there is no wipe branch: the
+  board is plain files in `.wipe/` that travel with your checkins, as before
+  1.0. `wipe doctor`, `wipe sync --check`, the board's top bar and the history
+  drawer now tell you that, instead of a bare "not a git repository", and
+  `wipe commit` / `sync` / `log` / `migrate` explain why they need git.
+  `wipe doctor` also warns when Plastic's `ignore.conf` doesn't keep the
+  board's cache (`.wipe/.cache`) out of checkins.
 
 - **The tray's "Open board" works again.** A tray started at login (or hidden
   by a launcher) gives up its console window, and the console handles it kept
@@ -722,3 +736,365 @@ you can run from your phone.
   at 10 / 100 / 500 tickets, plus every truncation and compaction rule; regenerate
   with `cargo test -p wipe-cli --release --test stress -- --ignored output_audit`.
 - README, website CLI reference, and harness scripts updated for 0.4.
+
+## 0.3.14 - 2026-07-15
+
+### Fixes
+
+- **Dragging cards is smooth again.** In 0.3.13 the "shrink over the trash"
+  effect fought the drag library, so a dragged card snapped between lists and
+  lagged behind the pointer. The shrink now applies to the card inside the
+  dragged copy, so cards follow the cursor cleanly and still shrink over the
+  trash.
+
+## 0.3.13 - 2026-07-15
+
+### Trash
+
+- **Dragging to the trash always works.** Instead of relying on a small drop
+  zone, the board now follows the pointer: while you drag, the card shrinks to
+  0.7x whenever the pointer is over the bin (releasing there deletes it) and
+  grows back when you move away. Deleted tickets still go to the restorable
+  trash.
+
+### Forum sidebar
+
+- **Resizable.** Drag the divider to set the sidebar's width; it is remembered
+  across sessions and the contents reflow to fit.
+- **Denser thread rows.** One-line title and one-line snippet, cut off with an
+  ellipsis to fit the sidebar.
+- **Grouped by activity.** Threads are split under quiet dividers: Today, This
+  week, This month, then by month.
+- **Clearer indicators.** The post count is a distinct badge with an icon;
+  author and time are right-aligned.
+- **Filters.** The search bar gains a filter panel: filter by who took part in
+  a thread (with an "only as original poster" toggle) and by labels. The text
+  search now narrows the thread list, and the toggle shows how many filters are
+  active.
+
+## 0.3.12 - 2026-07-15
+
+### Tickets
+
+- **Deleting a ticket moves it to the trash.** Deleted tickets go to a
+  per-board trash (not tracked by git) and can be restored for
+  `trash.retention_days` (default 7, a global setting) before they are purged
+  for good. New commands: `wipe trash list|restore|purge`,
+  `wipe ticket delete --purge` to delete permanently, and
+  `wipe ticket duplicate`.
+
+### Board UI
+
+- **A trash panel.** The trash can is always visible as a small icon, grows
+  into a drop target while you drag, and opens on click: trashed tickets
+  newest-first with Restore, delete-forever per item, empty-all, and the
+  retention setting in place.
+- **Card quick menu.** A menu in each card's top-right corner: Move to,
+  Priority, Labels, Assign, Duplicate and Delete.
+- **New cards open the full editor.** Labels, members, priority, description,
+  checklist, acceptance criteria and attachments can all be set before the
+  card exists; nothing is saved until you press Create.
+- **Paste to attach.** Ctrl+V in a title or description attaches pasted media
+  or a pasted local file path instead of inserting text. Pasting the same thing
+  twice doesn't attach it twice.
+- **Shorter project paths.** The project switcher shows compact paths (drive,
+  ..., last folders) on one row beside the board name.
+
+## 0.3.11 - 2026-07-14
+
+### Fixes
+
+- **List drag-to-reorder removed again.** The 0.3.10 list drag was broken: the
+  column vanished on drop and came back unchanged after a reload. Reorder lists
+  with Move left / Move right in the list menu, which saves reliably. Dragging
+  tickets within and between lists is unchanged.
+
+## 0.3.10 - 2026-07-14
+
+### CLI
+
+- **`wipe ticket create` requires `--list`.** Without it the command fails and
+  shows the available lists and an example, so tickets no longer land silently
+  in the leftmost list.
+- **Fix the author of existing work.** `wipe comment edit`,
+  `wipe comment reattribute`, `wipe ticket edit --author` and
+  `wipe forum edit --author` correct work posted under the wrong identity
+  without deleting and reposting it. Every correction is recorded.
+- **`wipe commit [ref]`** commits `.wipe/` (or one ticket's file) as its own
+  commit, attributed to wipe, without sweeping in anything else you have
+  staged. Turn on `board.autocommit` to commit after every board change.
+- **Stricter identity.** With `$WIPE_STRICT_IDENTITY` set, wipe refuses to
+  attribute a write to the repo's VCS user in shared worktrees, and
+  `wipe identity whoami` warns when identity sources disagree.
+- **Subscriptions and an inbox.** `wipe subscribe`, `wipe unsubscribe` and
+  `wipe subscriptions`, plus `wipe inbox [--unread|--since]`, show what others
+  did on tickets you are assigned to, created or subscribed to. Assignees are
+  subscribed automatically.
+
+### Board
+
+- **Exposed boards need a token.** When `wipe serve` is exposed over Tailscale
+  or a proxy, the API and live updates require an access token (sent as a
+  header or `?token=`). The token is part of the served URL and the board
+  remembers it.
+- Lists can be dragged to reorder them (reverted in 0.3.11).
+
+## 0.3.9 - 2026-07-14
+
+- **Delete comments.** `wipe comment remove`, or hover a comment in the board
+  and delete it.
+- **Drag a ticket to the trash.** A delete zone appears while dragging and
+  glows when a release would delete. Lists that still hold tickets can now be
+  deleted too, after a confirmation.
+- **A better forum view.** Threads are sorted by latest activity, and each row
+  shows a snippet, labels, the latest author, a relative time and the post
+  count. Open threads get a header with their details.
+- **`$WIPE_AGENT` for agents running side by side.** Set per terminal, it
+  takes priority over the shared session file, so several agents on one
+  machine each get credit for their own work.
+- The board shows `Name <email>` assignees by their name, and comments written
+  in the board are attributed to the real identity instead of "ui".
+
+## 0.3.8 - 2026-07-13
+
+- **0.3.7 is actually released.** The 0.3.7 release got stuck waiting for
+  macOS build machines, so its binaries and npm package never went out. 0.3.8
+  ships everything from 0.3.7 for Linux and Windows. Prebuilt macOS and ARM
+  binaries are dropped for now; install with `cargo install wipe-cli` there.
+  The docs now list exactly which platforms npm covers.
+
+## 0.3.7 - 2026-07-13
+
+- **Acceptance criteria.** Tickets get an acceptance-criteria list next to the
+  checklist, with the same features: `wipe criteria` in the CLI, a section in
+  the ticket editor and a progress badge on the card.
+- **Safer ticket editing.** Edits are drafts until you press Save (or
+  Cancel). Unsaved drafts survive closing the ticket or reloading the page
+  without saving or logging anything. Tickets always open in preview, and long
+  titles wrap instead of being cut off.
+- **Livelier live updates.** New tickets type their title in, moved tickets
+  float into place, and edited tickets are highlighted.
+- **Windows autostart runs without a window.** The login entry now starts wipe
+  hidden and removes the old console-window version.
+
+### Fixes
+
+- **Ticket ids can't escape the board.** Commands like
+  `wipe ticket delete ../board` are refused instead of touching files outside
+  the board.
+- Retrying after a lost connection resumes live updates; a background refresh
+  can no longer overwrite an edit you just made; browsing history handles
+  stale or failed loads and boards in subfolders.
+- `wipe forum show --depth` is respected with `--json`, and `wipe forum watch`
+  exits when its output is closed.
+- Double-clicking submit no longer creates duplicate forum posts or tickets,
+  and Escape in an editor or popup no longer closes the whole ticket.
+
+## 0.3.6 - 2026-07-11
+
+- **Checklists.** Add an ordered list of tickable items to any ticket:
+  `wipe checklist add|list|check|uncheck|toggle|edit|remove|move` (all with
+  `--json`), and a checklist section with a progress bar in the ticket editor.
+  Cards show a done/total badge.
+- **Reloading keeps your place.** A page refresh reopens the board and view
+  you had open instead of jumping back to the first board.
+- **Clearer dragging.** Only the list a card would land in glows, and drop
+  zones grow while dragging so fast moves don't snap back.
+- **Quieter edits.** Editing an open ticket no longer flashes it as new
+  activity on the board.
+
+## 0.3.5 - 2026-07-11
+
+- **Guided setup on first run.** The first time you run wipe after installing
+  (npm or cargo), it offers to start `wipe onboard`. It asks only once, is
+  skipped for `--json`, piped output and CI, and can be turned off with
+  `WIPE_NO_ONBOARD_PROMPT`.
+- **Docs match the CLI.** The CLI reference on wipeboard.dev now covers every
+  command (onboard, identity, board, list, media, forum, scan and the full
+  config), and the installation and quickstart pages explain `wipe onboard`.
+
+## 0.3.4 - 2026-07-06
+
+### Fixes
+
+- **Dragging cards is reliable again.** The 0.3.3 live-update animations
+  fought with drag-and-drop: the drop highlight flickered, cards animated back
+  from where they started, and a dropped card could snap back to its old list.
+  The gap that opens while dragging is now exactly the size of the card, with
+  a dashed outline where it will land, and drops stay put. Changes made by
+  agents still flash on the board.
+
+## 0.3.3 - 2026-07-06
+
+- **The board updates live.** An open board checks for changes every half
+  second: tickets moved by agents glide between lists, changed cards flash
+  briefly, and the Forum tab shows a dot when there is new activity. Nothing
+  re-renders when nothing changed, and browsing history or switching boards
+  isn't disturbed.
+- **Update notice.** Once a day wipe checks for a newer release and prints a
+  one-line notice on stderr if you are behind (never in `--json` output). Turn
+  it off with `WIPE_NO_UPDATE_CHECK`.
+- **The board UI is current again.** 0.3.1 and 0.3.2 shipped an outdated board
+  UI inside `wipe serve`, so their UI fixes never reached you. Every release
+  now includes a freshly built UI. Lists also size to their cards again
+  instead of stretching to the bottom of the board.
+
+## 0.3.2 - 2026-07-05
+
+### Identity
+
+- **Works with more version control systems.** wipe detects git, Plastic SCM
+  (Unity VCS), Mercurial, SVN, Fossil and Jujutsu and uses the real current
+  user and authors, so tickets in non-git repos are no longer attributed to
+  "unknown". A slow or hung VCS tool can't block wipe.
+- **Agent identities.** `wipe identity list|use|whoami|clear` lets an agent
+  bind an identity to its terminal session (`$WIPE_SESSION`), and the global
+  `--agentid` flag overrides it for one command.
+- **A global default identity** (defaults to "human"), with an option to
+  prefer it over the VCS user, in `wipe config --global`, `wipe onboard` and
+  the board settings. `wipe init` no longer writes the creator's personal
+  identity into the board.
+
+### Finding boards
+
+- **`wipe scan`** finds `.wipe` boards on disk, and `wipe serve` scans when it
+  starts, so serving from any folder shows every board on the machine. The
+  board UI has a Rescan button.
+
+### Fixes
+
+- `--agentid` no longer rewrites the board's identities on read-only commands,
+  and config, registry and session files are written safely.
+
+## 0.3.1 - 2026-07-04
+
+- **Edits land in the board you're looking at.** Changes made while viewing a
+  different board in the UI were saved to the board `wipe serve` was started
+  in. They now go to the board you are viewing, the served board opens by
+  default, and `wipe serve` can run outside any board as a viewer for all of
+  them.
+- **`wipe onboard`.** A step-by-step global setup: port, network exposure,
+  auto-serve, starting at login, idle timeout, starter content, agent skill,
+  theme and accent.
+- **Forum polish.** Replies are drawn as a cleaner nested tree, ids are
+  hidden, author names are shown, and labels can be picked from the board's
+  labels when posting.
+- More label colors, and lists grow with their cards instead of stretching to
+  the bottom of the board.
+
+## 0.3.0 - 2026-07-03
+
+### Forum
+
+- **A project forum next to the board.** Humans and agents share decisions,
+  gotchas, conventions and lasting project knowledge in threaded discussions,
+  stored in `.wipe/forum/` and versioned with git. Posts have readable ids
+  (`F-1`, `F-1.2`, `F-1.2.1`), can carry attachments, and use the board's
+  labels and identities.
+- **Forum commands.** `wipe forum post|reply|show|list|search|edit|delete`,
+  and `wipe forum watch`, a live stream of new posts that agents can filter by
+  pattern, label, author or scope. Search matches thread titles and bodies.
+- **Forum in the board.** A Board/Forum toggle opens a chat-style view with a
+  thread list, threaded replies, compose, search and live updates.
+- The agent skill explains how to use the forum.
+
+### Also
+
+- **Shell completions.** `wipe completions <bash|zsh|fish|powershell|elvish>`.
+- **Safer rendering.** Markdown in tickets, comments and forum posts is
+  sanitized, so HTML or scripts in a post can't run in the board.
+- Forum thread ids that try to reach outside the forum folder are refused.
+
+## 0.2.2 - 2026-07-03
+
+- **npm install works on Windows with Git's tar on PATH.** The 0.2.1 fix was
+  incomplete; extraction on Windows now always uses the built-in Windows tar.
+
+## 0.2.1 - 2026-07-03
+
+- **npm install on Windows with Git's tar on PATH.** When GNU tar (from Git
+  for Windows) came first on PATH, `npm i -g @mflrevan/wipe` failed with
+  "Cannot connect to C:" and kept the old version. (Completed in 0.2.2.)
+
+## 0.2.0 - 2026-07-03
+
+- **Guided `wipe init`.** An interactive setup for the board name, starter
+  content (standard, lists only or empty), UI port, network exposure, auto-serve
+  and agent-skill install. `--yes`, `--json` or no terminal skip the questions.
+- **Install the agent skill.** `wipe skill show|install|path` writes the agent
+  skill into the project's `.claude` / `.agents` folder or your user folder,
+  following the convention already there.
+- **Auto-serve.** With auto-serve (or `--idle`) on, `wipe serve` shuts down
+  after a while with no board open, so it costs nothing when unused.
+- **`wipe serve` finds a running board.** If wipe is already serving on the
+  port, it points you there instead of failing.
+- **Global defaults.** `wipe config --global` stores your defaults, including
+  the board's accent and theme.
+
+### Fixes
+
+- **Dropping cards into empty lists works.** Lists now stretch to the full
+  board height, so dropping anywhere in a column lands the card there instead
+  of snapping back.
+
+## 0.1.2 - 2026-07-03
+
+- **Ticket activity.** Every ticket records who created, moved, renamed or
+  edited it and who changed its priority, labels, assignees or attachments.
+  The ticket view shows these next to the comments, newest first.
+- **Card covers.** Cards show their first image attachment as a cover, and the
+  title replaces the ticket id as the top line.
+- **Richer new-card dialog.** Set priority, labels, members and attachments
+  when creating a card, not just title and description.
+- **Removable members.** Unassign from the member chip, or delete an agent
+  identity altogether.
+- Fixes for popovers being cut off or closing unexpectedly, centered avatar
+  initials, and authors shown as `Name <email>` instead of their name.
+
+## 0.1.1 - 2026-07-03
+
+- **npm install works on Windows.** `npm i -g @mflrevan/wipe` on 0.1.0 failed
+  with `spawnSync unzip ENOENT`; Windows releases now ship as `.tar.gz`.
+- The README has screenshots, and wipeboard.dev is the official site and docs.
+
+## 0.1.0 - 2026-07-03
+
+The first release.
+
+### CLI
+
+- **A board in your repo.** Lists, tickets, comments, labels and priorities
+  live in `.wipe/` as plain JSON, written atomically and in a stable format so
+  edits to different tickets merge in git without conflicts.
+- **The `wipe` command.** `init`, `status`, `board`, `list`, `ticket`,
+  `comment`, `label`, `media`, `config`, `doctor` and `skill`, with a `--json`
+  mode for agents, stable exit codes and authors taken from git.
+- **Labels are the only categories.** Each new label gets its own color
+  automatically.
+- **Attachments.** Attach files to tickets, with a size limit (50 MB by
+  default); files already tracked in the repo are referenced instead of
+  copied.
+- **An agent skill.** `wipe skill` prints the guide that teaches agents to
+  work with the board.
+
+### Board
+
+- **`wipe serve`** opens the board in the browser (`--open`) on any port,
+  with live updates when `.wipe` changes and a list of every board you have
+  opened.
+- **Drag-and-drop board.** Columns, cards with priority, colored labels,
+  assignee avatars (agents get a bot badge) and attachment and comment counts.
+  Add, rename, move and delete lists.
+- **Ticket editor.** A centered ticket view with a media cover, labels,
+  members, priority, an editable description, attachments that play inline
+  (images, audio, video) and comments.
+- **Identities.** Assign git users and agents, and give them display names.
+- **History.** A git-graph view of the repo with branches and tags; click a
+  commit to see the board as it was then.
+- Light and dark themes with a choice of accent colors, and board settings to
+  recolor or delete labels.
+
+### Install
+
+- Prebuilt binaries for Linux and Windows, `npm install -g @mflrevan/wipe`,
+  and `cargo install wipe-cli`. macOS installs through cargo.

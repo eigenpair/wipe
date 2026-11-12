@@ -43,6 +43,7 @@ pub fn mode(command: &Command) -> Mode {
         | Command::Serve(_)
         | Command::Tray(_)
         | Command::Update(_)
+        | Command::Changelog(_)
         | Command::Dev(_)
         | Command::Status(_)
         | Command::Completions { .. } => Mode::Skip,
@@ -68,6 +69,7 @@ pub fn sync_lines(command: &Command) -> bool {
             | Command::Serve(_)
             | Command::Tray(_)
             | Command::Update(_)
+            | Command::Changelog(_)
             | Command::Dev(_)
             | Command::Watch(_)
             | Command::Skill { .. }

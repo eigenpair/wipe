@@ -47,6 +47,7 @@
   import TicketModal from '$lib/components/TicketModal.svelte';
   import NewTicketDialog from '$lib/components/NewTicketDialog.svelte';
   import HistoryDrawer from '$lib/components/HistoryDrawer.svelte';
+  import ChangelogDialog from '$lib/components/ChangelogDialog.svelte';
   import BoardSettings from '$lib/components/BoardSettings.svelte';
   import ThemeToggle from '$lib/components/ThemeToggle.svelte';
   import SyncBar from '$lib/components/SyncBar.svelte';
@@ -64,6 +65,7 @@
 
   let settingsOpen = $state(false);
   let historyOpen = $state(false);
+  let changelogOpen = $state(false);
 
   // The forum tab returns to where you were in the forum.
   let lastForum: Route = { view: 'forum' };
@@ -220,10 +222,15 @@
         </button>
       {/if}
       {#if $health}
-        <span class="status ok" title="daemon v{$health.version}">
+        <button
+          class="status ok asbtn"
+          title="wipe v{$health.version} - what's new"
+          aria-label="What's new in wipe"
+          onclick={() => (changelogOpen = true)}
+        >
           <span class="dot"></span>
           <span class="stxt">v{$health.version}</span>
-        </span>
+        </button>
       {:else}
         <span class="status off"><span class="dot"></span><span class="stxt">offline</span></span>
       {/if}
@@ -293,6 +300,7 @@
 <TicketModal ticketId={modalTicketId} onclose={() => go({ view: 'board' })} />
 <NewTicketDialog bind:open={newTicketOpen} listId={newTicketList} listName={newTicketName} />
 <HistoryDrawer bind:open={historyOpen} />
+<ChangelogDialog bind:open={changelogOpen} />
 <BoardSettings bind:open={settingsOpen} />
 <Lightbox />
 <RefPreview />
@@ -421,6 +429,18 @@
     font-family: var(--wp-font-mono);
     font-size: 12px;
     color: var(--wp-text-muted);
+  }
+  .status.asbtn {
+    border: 1px solid transparent;
+    background: none;
+    padding: 3px 8px;
+    border-radius: var(--wp-r-pill);
+    cursor: pointer;
+    transition: all var(--wp-fast) var(--wp-ease);
+  }
+  .status.asbtn:hover {
+    border-color: var(--wp-border);
+    color: var(--wp-text);
   }
   .status .dot {
     width: 8px;

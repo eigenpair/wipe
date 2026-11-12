@@ -58,7 +58,8 @@ const NET_TIMEOUT: Duration = Duration::from_secs(30);
 const FETCH_EVERY: i64 = 120;
 const STATE_FILE: &str = "sync.json";
 const HASH_CACHE: &str = "sync-hashes.json";
-const STATUS_CACHE: &str = "sync-status.json";
+// Versioned: a cache written by an older wipe (missing fields) is never read.
+const STATUS_CACHE: &str = "sync-status-v2.json";
 
 /// How a board relates to the wipe branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +102,10 @@ pub struct Status {
     pub rewritten: bool,
     /// When the remote was last fetched.
     pub fetched: Option<DateTime<Utc>>,
+    /// Outside git ([`Mode::None`]): the version control the board's files
+    /// travel with instead (`plastic`, `mercurial`, ...), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs: Option<String>,
 }
 
 impl Status {
@@ -118,8 +123,47 @@ impl Status {
             unpublished: 0,
             rewritten: false,
             fetched: None,
+            vcs: None,
         }
     }
+}
+
+/// The version control hosting a board outside git, when there is one.
+fn host_vcs(store: &Store) -> Option<crate::vcs::Vcs> {
+    match crate::vcs::detect(store.root()) {
+        crate::vcs::Vcs::None | crate::vcs::Vcs::Git => None,
+        v => Some(v),
+    }
+}
+
+/// A version control's display name (`Plastic SCM / Unity Version Control`).
+pub fn vcs_label(name: &str) -> &'static str {
+    match name {
+        "plastic" => "Unity Version Control (Plastic SCM)",
+        "mercurial" => "Mercurial",
+        "svn" => "Subversion",
+        "fossil" => "Fossil",
+        "jujutsu" => "Jujutsu",
+        _ => "version control",
+    }
+}
+
+/// How a board outside git is shared, in one line: it has no wipe branch, so
+/// its files travel with the code in whatever version control hosts them.
+pub fn plain_files_note(vcs: Option<&str>) -> String {
+    match vcs {
+        Some(v) => format!(
+            "{} workspace - the board is plain files in .wipe/ that travel with your {}; check them in with your code (the wipe branch, `wipe commit`/`sync`/`log`, needs git)",
+            vcs_label(v),
+            if v == "plastic" || v == "svn" { "checkins" } else { "commits" },
+        ),
+        None => "not under version control - the board is plain files in .wipe/ (the wipe branch, `wipe commit`/`sync`/`log`, needs git)".to_string(),
+    }
+}
+
+/// The error for a branch command on a board outside git.
+fn no_branch(store: &Store) -> String {
+    plain_files_note(host_vcs(store).map(|v| v.name()))
 }
 
 /// Per-board sync bookkeeping, in the gitignored cache.
@@ -534,7 +578,10 @@ pub fn status(store: &Store) -> Result<Status> {
     );
     let st = match &repo {
         Some(repo) => compute_status(store, repo, &state, &work)?,
-        None => Status::bare(Mode::None),
+        None => Status {
+            vcs: host_vcs(store).map(|v| v.name().to_string()),
+            ..Status::bare(Mode::None)
+        },
     };
     let _ = crate::store::write_json_atomic(
         &cache_path,
@@ -771,7 +818,7 @@ pub struct Preview {
 
 /// Preview applying the incoming changes (as last fetched) to the working copy.
 pub fn preview(store: &Store, res: &Resolutions) -> Result<Preview> {
-    let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     require_branch(&repo)?;
     let state = load_state(store);
     let base = state.base.clone().or_else(|| repo.local());
@@ -854,7 +901,7 @@ fn require_branch(repo: &Repo) -> Result<()> {
 /// `fetch` is set. Writes nothing while a conflict lacks a resolution. The
 /// caller holds the board lock.
 pub fn sync(store: &Store, fetch: bool, res: &Resolutions) -> Result<Synced> {
-    let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     if fetch {
         repo.fetch()?;
         let mut state = load_state(store);
@@ -951,7 +998,7 @@ pub fn commit(
     author: &str,
     res: &Resolutions,
 ) -> Result<Committed> {
-    let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     require_branch(&repo)?;
     let scope_path = match scope {
         Some(raw) => Some(format!(
@@ -1167,7 +1214,7 @@ pub fn take(
     res: &Resolutions,
     discard_local: bool,
 ) -> Result<Taken> {
-    let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     require_branch(&repo)?;
     let mut out = Taken {
         taken: entities.to_vec(),
@@ -1308,7 +1355,7 @@ pub struct LogEntry {
 /// The branch's commits, newest first: incoming ones, then the base, then the
 /// past.
 pub fn log(store: &Store, limit: usize) -> Result<Vec<LogEntry>> {
-    let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     require_branch(&repo)?;
     let state = load_state(store);
     let (local, remote) = repo.tips();
@@ -1366,7 +1413,7 @@ pub struct AtCommit {
 
 /// The board as of `rev` on the branch.
 pub fn at(store: &Store, rev: &str) -> Result<AtCommit> {
-    let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     let rev = repo
         .git
         .rev(rev)
@@ -1455,11 +1502,7 @@ pub struct MigrateOpts {
 /// edits since it diverged are merged into the working copy instead. The caller
 /// holds the board lock.
 pub fn migrate(store: &Store, author: &str, opts: &MigrateOpts) -> Result<Migrated> {
-    let repo = Repo::open(store).ok_or_else(|| {
-        Error::msg(
-            "not a git repository - the wipe branch needs git (the board stays as plain files)",
-        )
-    })?;
+    let repo = Repo::open(store).ok_or_else(|| Error::msg(no_branch(store)))?;
     if opts.publish {
         // Learn whether another clone already moved the board.
         let _ = repo.fetch();

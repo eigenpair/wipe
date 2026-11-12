@@ -130,6 +130,8 @@ cargo build --workspace --release
 **Updating:** `wipe update` updates through whichever channel installed it (npm
 global or project, the release installer, or `cargo install`), and offers to
 close a running `wipe tray` / `wipe serve` from that install first.
+`wipe changelog` (or the version badge in the board's top bar) shows what's
+new.
 
 ## Quickstart
 

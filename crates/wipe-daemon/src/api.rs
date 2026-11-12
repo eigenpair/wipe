@@ -266,6 +266,14 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "service": "wipe-daemon", "version": env!("CARGO_PKG_VERSION") }))
 }
 
+/// `GET /api/changelog` - wipe's release notes, newest first (Markdown bodies).
+pub async fn changelog() -> Json<Value> {
+    Json(json!({
+        "current": env!("CARGO_PKG_VERSION"),
+        "releases": wipe_core::changelog::releases(),
+    }))
+}
+
 /// `GET /api/config` - user-global preferences (styling + default identity) so the
 /// board UI can honor the choices made via `wipe config --global` / `wipe onboard`.
 pub async fn app_config() -> Json<Value> {

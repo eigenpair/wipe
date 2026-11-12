@@ -745,3 +745,44 @@ fn multi_agent_forum_collaboration() {
     let s = p.json_as("reviewer", &["search", "cents"]);
     assert_eq!(s["posts"][0]["id"].as_str(), Some("F-001"));
 }
+
+#[test]
+fn plastic_workspace_boards_are_plain_files_and_say_so() {
+    let p = Project::with_board("Plastic");
+    std::fs::create_dir(p.path().join(".plastic")).unwrap();
+
+    let d = p.json(&["doctor"]);
+    assert_eq!(d["sync"]["mode"], "none");
+    assert_eq!(d["sync"]["vcs"], "plastic");
+    assert!(d["sync"]["note"].as_str().unwrap().contains("checkins"));
+    let warns = d["warnings"].to_string();
+    assert!(warns.contains("ignore.conf"), "{warns}");
+
+    std::fs::write(p.path().join("ignore.conf"), "Library\n/.wipe/.cache\n").unwrap();
+    assert!(!p.json(&["doctor"])["warnings"]
+        .to_string()
+        .contains("ignore.conf"));
+
+    let out = p.cmd(&["migrate"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Unity Version Control"));
+}
+
+#[test]
+fn changelog_lists_versions_newest_first() {
+    let p = Project::new();
+    let v = p.json(&["changelog", "--all"]);
+    assert_eq!(v["current"], env!("CARGO_PKG_VERSION"));
+    let rs = v["releases"].as_array().unwrap();
+    assert_eq!(rs.last().unwrap()["version"], "0.1.0");
+    assert_eq!(
+        p.json(&["changelog", "1.0.0"])["releases"][0]["date"],
+        "2026-11-01"
+    );
+    assert!(!p
+        .cmd(&["changelog", "9.9.9"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+}

@@ -54,6 +54,17 @@ edit("Cargo.toml", (s) =>
     .replace(/(wipe-daemon = \{ path = "crates\/wipe-daemon", version = ")[^"]*(")/, `$1${version}$2`)
 );
 
+// The changelog wipe shows (`wipe changelog`, the board's "What's new") is
+// compiled in from a copy inside wipe-core, so it ships with the crate too.
+{
+  const src = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+  const dst = join(root, "crates/wipe-core/CHANGELOG.md");
+  if (!existsSync(dst) || readFileSync(dst, "utf8") !== src) {
+    writeFileSync(dst, src);
+    console.log("  updated crates/wipe-core/CHANGELOG.md");
+  }
+}
+
 // Standalone Tauri wrapper crate.
 edit("apps/desktop/src-tauri/Cargo.toml", (s) =>
   s.replace(/(\nversion = ")[^"]*(")/, `$1${version}$2`)

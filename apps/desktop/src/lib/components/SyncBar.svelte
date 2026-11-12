@@ -143,6 +143,13 @@
     void closeSync();
   }
 
+  function vcsLabel(v: string): string {
+    return ({ plastic: 'Unity VCS', mercurial: 'Mercurial', svn: 'SVN', fossil: 'Fossil', jujutsu: 'Jujutsu' } as Record<string, string>)[v] ?? v;
+  }
+  function plainNote(v: string): string {
+    return `${vcsLabel(v)} workspace: the board is plain files in .wipe/ - check them in with your code to share it. Commit, sync and history (the wipe branch) need git.`;
+  }
+
   function fetchedAgo(): string {
     if (!st?.fetched) return 'not fetched yet';
     return `fetched ${formatDate(st.fetched)}`;
@@ -370,6 +377,12 @@
       </div>
     {/if}
   </div>
+{:else if $health && st && st.mode === 'none' && st.vcs}
+  <div class="sync">
+    <span class="pill static plain" title={plainNote(st.vcs)}>
+      <GitBranch size={13} /> Board travels with your {vcsLabel(st.vcs)} {st.vcs === 'plastic' || st.vcs === 'svn' ? 'checkins' : 'commits'}
+    </span>
+  </div>
 {/if}
 
 <style>
@@ -421,6 +434,13 @@
   }
   .pill.static {
     cursor: default;
+  }
+  .pill.plain {
+    height: 26px;
+    border-color: var(--wp-border);
+    background: transparent;
+    color: var(--wp-text-subtle);
+    font-weight: 400;
   }
   .pill code {
     font-family: var(--wp-font-mono);

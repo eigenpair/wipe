@@ -61,7 +61,20 @@
     </header>
 
     <div class="body wp-scroll">
-      {#if st?.mode !== 'branch'}
+      {#if st?.mode === 'none'}
+        <p class="empty">
+          {#if st.vcs === 'plastic'}
+            This board lives in a Unity Version Control (Plastic) workspace: its history is your
+            Plastic changesets that include .wipe/. The wipe branch history needs git.
+          {:else if st.vcs}
+            This board's history is in your {st.vcs} commits that include .wipe/. The wipe branch
+            history needs git.
+          {:else}
+            This board isn't under version control, so it has no history. In a git repo it would
+            live on the wipe branch.
+          {/if}
+        </p>
+      {:else if st?.mode !== 'branch'}
         <p class="empty">History follows the wipe branch - this board isn't on it yet.</p>
       {:else}
         <ol class="timeline">

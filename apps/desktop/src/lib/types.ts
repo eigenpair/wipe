@@ -81,6 +81,20 @@ export interface Project {
   name: string;
 }
 
+/** One version's section of wipe's changelog (`GET /api/changelog`). */
+export interface Release {
+  version: string;
+  /** `YYYY-MM-DD`, or null while unreleased. */
+  date: string | null;
+  /** Markdown. */
+  body: string;
+}
+
+export interface Changelog {
+  current: string;
+  releases: Release[];
+}
+
 export interface Health {
   ok: boolean;
   service: string;
@@ -271,6 +285,9 @@ export interface SyncStatus {
   rewritten: boolean;
   fetched: string | null;
   fetch_error?: string;
+  /** With mode `none`: the version control the board's files travel with
+   *  instead of the wipe branch (`plastic`, `mercurial`, ...). */
+  vcs?: string;
 }
 
 export type SyncSide = 'ours' | 'theirs';

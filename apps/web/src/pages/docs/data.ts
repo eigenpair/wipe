@@ -539,6 +539,12 @@ export const CLI_GROUPS: CliGroup[] = [
           "Detect how wipe was installed (npm global or project, release installer, cargo install) and update it the same way. Wipe processes running from that install (a tray or serve) are closed first, after asking; --yes closes them without asking, --check only reports.",
         example: "wipe update",
       },
+      {
+        command: "wipe changelog [VERSION] [--since V] [-n N] [--all]",
+        description:
+          "What changed in each version of wipe, newest first (the three newest by default). Give a version to see just it, or --since the version you came from. The board UI shows the same notes behind its version badge.",
+        example: "wipe changelog --since 1.0.0",
+      },
     ],
   },
   {

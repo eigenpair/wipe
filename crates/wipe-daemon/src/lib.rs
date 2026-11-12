@@ -64,6 +64,7 @@ pub use net::ShownUrl;
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(api::health))
+        .route("/api/changelog", get(api::changelog))
         .route("/api/config", get(api::app_config).patch(api::patch_config))
         .route("/api/scan", post(api::rescan))
         .route("/api/projects", get(api::projects))
