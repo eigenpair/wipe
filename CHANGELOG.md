@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.3 - unreleased
+## 1.1.3 - 2026-11-12
 
 - **New license: PolyForm Strict 1.0.0.** wipe is now source-available, not
   open source: you may use it for any noncommercial purpose, but not
