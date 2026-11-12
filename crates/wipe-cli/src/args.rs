@@ -1311,6 +1311,9 @@ pub struct TrayArgs {
     /// Port to serve on (default: your global default, else 6737).
     #[arg(long)]
     pub port: Option<u16>,
+    /// Open the board in the browser once it is served (the desktop shortcut).
+    #[arg(long)]
+    pub open: bool,
 }
 
 /// `wipe config ...`

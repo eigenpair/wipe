@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.2 - unreleased
+
+- **The tray's "Open board" works again.** A tray started at login (or hidden
+  by a launcher) gives up its console window, and the console handles it kept
+  were dead - so every program it started failed with "the handle is
+  invalid": the browser for "Open board", and git for the board server it
+  runs (your identity, sync). The tray now points its standard handles at
+  `NUL` when it releases the console.
+- **Double-click the tray icon** to open the board (a single click no longer
+  does, so a double-click opens one tab, not two).
+- **"Create shortcut"** in the tray menu, below "Start at login": puts a wipe
+  shortcut with the wipe icon on your desktop. It opens the board, starting
+  the tray first if it isn't running (`wipe tray --open`).
+
 ## 1.1.1 - 2026-11-10
 
 - **`wipe update` no longer hangs the shell that ran it.** When it restarts

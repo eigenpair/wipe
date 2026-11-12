@@ -1,7 +1,8 @@
 //! `wipe tray`: the board server as a real desktop app - an icon in the Windows
 //! notification area / the macOS menu bar with a menu (open the board, open it on
-//! a phone, copy the phone link, start at login, quit) instead of a headless
-//! background process. Login autostart launches this on Windows and macOS.
+//! a phone, copy the phone link, start at login, a desktop shortcut, quit)
+//! instead of a headless background process. Double-clicking the icon opens the
+//! board. Login autostart launches this on Windows and macOS.
 //!
 //! The server runs in-process on a background thread; the tray owns the main
 //! thread's event loop (required on macOS). Only one tray runs per user: a second
@@ -27,7 +28,7 @@ mod imp {
     use tao::event::{Event, StartCause};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-    use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tray_icon::{Icon, MouseButton, TrayIconBuilder, TrayIconEvent};
 
     use wipe_core::{registry, GlobalConfig, Store};
 
@@ -56,12 +57,139 @@ mod imp {
     }
 
     fn open_url(url: &str) {
+        use std::process::Stdio;
         #[cfg(windows)]
-        let _ = wipe_core::vcs::command("cmd")
-            .args(["/C", "start", "", url])
-            .spawn();
+        let mut cmd = {
+            let mut c = wipe_core::vcs::command("cmd");
+            c.args(["/C", "start", "", url]);
+            c
+        };
         #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open").arg(url).spawn();
+        let mut cmd = {
+            let mut c = std::process::Command::new("open");
+            c.arg(url);
+            c
+        };
+        let _ = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
+    /// Point this process's standard handles at NUL. A tray started at login
+    /// (or from a shortcut) gets a console it then releases; the console
+    /// handles it keeps are dead, and every program it starts with them -
+    /// the browser for "Open board", git for the board server - fails with
+    /// "the handle is invalid".
+    #[cfg(windows)]
+    fn null_std_handles() {
+        use std::os::windows::io::IntoRawHandle;
+        use windows_sys::Win32::System::Console::{
+            SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        let Ok(nul) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("NUL")
+        else {
+            return;
+        };
+        // Leaked on purpose: it backs the std handles for the process lifetime.
+        let h = nul.into_raw_handle();
+        // SAFETY: replaces the process's std handles with a valid, open handle.
+        unsafe {
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                SetStdHandle(which, h as _);
+            }
+        }
+    }
+
+    /// A desktop shortcut that opens the board (starting the tray first if it
+    /// isn't running), with the wipe icon.
+    #[cfg(windows)]
+    fn create_shortcut() -> Result<std::path::PathBuf> {
+        let exe = std::env::current_exe().context("locating wipe.exe")?;
+        let dir = GlobalConfig::path()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .context("locating the wipe config directory")?;
+        std::fs::create_dir_all(&dir)?;
+        let ico = dir.join("wipe.ico");
+        std::fs::write(&ico, ico_bytes(64)).context("writing the shortcut icon")?;
+        // Launched through WScript, hidden, like the login entry: no console
+        // window flashes, and an already running tray just opens the board.
+        let vbs = dir.join("wipe-open.vbs");
+        let exe_vbs = exe.display().to_string().replace('"', "\"\"");
+        std::fs::write(
+            &vbs,
+            format!(
+                "CreateObject(\"WScript.Shell\").Run \"\"\"{exe_vbs}\"\" tray --foreground --open\", 0, False\r\n"
+            ),
+        )
+        .context("writing the shortcut launcher")?;
+        let wscript = std::env::var_os("SystemRoot")
+            .map(|r| {
+                std::path::PathBuf::from(r)
+                    .join("System32")
+                    .join("wscript.exe")
+            })
+            .unwrap_or_else(|| "wscript.exe".into());
+        let q = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
+        let script = format!(
+            "$d = [Environment]::GetFolderPath('Desktop'); \
+             $l = Join-Path $d 'wipe.lnk'; \
+             $s = (New-Object -ComObject WScript.Shell).CreateShortcut($l); \
+             $s.TargetPath = '{wscript}'; $s.Arguments = '\"{vbs}\"'; \
+             $s.IconLocation = '{ico}'; $s.Description = 'Open the wipe board'; \
+             $s.WorkingDirectory = $env:USERPROFILE; $s.Save(); Write-Output $l",
+            wscript = q(&wscript),
+            vbs = q(&vbs),
+            ico = q(&ico),
+        );
+        let out = wipe_core::vcs::command("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .context("running PowerShell to create the shortcut")?;
+        if !out.status.success() {
+            anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(std::path::PathBuf::from(
+            String::from_utf8_lossy(&out.stdout).trim(),
+        ))
+    }
+
+    /// The tray icon as a `.ico` file (one 32-bit image), for the shortcut.
+    #[cfg(windows)]
+    fn ico_bytes(size: u32) -> Vec<u8> {
+        let rgba = icon_rgba(size);
+        let mask_row = size.div_ceil(32) * 4;
+        let pixels = size * size * 4;
+        let image_len = 40 + pixels + mask_row * size;
+        let mut out = Vec::with_capacity(22 + image_len as usize);
+        out.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
+        let dim = if size >= 256 { 0 } else { size as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0, 1, 0, 32, 0]);
+        out.extend_from_slice(&image_len.to_le_bytes());
+        out.extend_from_slice(&22u32.to_le_bytes());
+        // BITMAPINFOHEADER: height counts the colour image and the mask.
+        for v in [40u32, size, size * 2] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        for v in [0u32, pixels, 0, 0, 0, 0] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        // BGRA, bottom-up.
+        for y in (0..size).rev() {
+            for x in 0..size {
+                let i = ((y * size + x) * 4) as usize;
+                out.extend_from_slice(&[rgba[i + 2], rgba[i + 1], rgba[i], rgba[i + 3]]);
+            }
+        }
+        out.extend(std::iter::repeat_n(0u8, (mask_row * size) as usize));
+        out
     }
 
     fn copy_to_clipboard(text: &str) {
@@ -81,13 +209,19 @@ mod imp {
 
     /// When started from a terminal, relaunch in the background and return, so
     /// the terminal isn't held by a GUI app. Returns `true` when relaunched.
-    fn detach() -> bool {
+    fn detach(args: &TrayArgs) -> bool {
         let Ok(exe) = std::env::current_exe() else {
             return false;
         };
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(["tray", "--foreground"])
-            .stdin(std::process::Stdio::null())
+        cmd.args(["tray", "--foreground"]);
+        if let Some(p) = args.port {
+            cmd.args(["--port", &p.to_string()]);
+        }
+        if args.open {
+            cmd.arg("--open");
+        }
+        cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         #[cfg(windows)]
@@ -108,6 +242,11 @@ mod imp {
     /// The tray icon: a rounded terracotta tile with a white "w", drawn at
     /// `size` px with anti-aliased strokes (no image assets needed).
     fn icon(size: u32) -> Icon {
+        Icon::from_rgba(icon_rgba(size), size, size).expect("valid icon buffer")
+    }
+
+    /// The icon's RGBA pixels (see [`icon`]).
+    fn icon_rgba(size: u32) -> Vec<u8> {
         let s = size as f32;
         let mut rgba = vec![0u8; (size * size * 4) as usize];
         // The "w": four strokes through five points.
@@ -153,7 +292,7 @@ mod imp {
                 rgba[i + 3] = (tile * 255.0) as u8;
             }
         }
-        Icon::from_rgba(rgba, size, size).expect("valid icon buffer")
+        rgba
     }
 
     pub fn run(args: TrayArgs) -> Result<()> {
@@ -175,7 +314,7 @@ mod imp {
         let from_console = std::io::IsTerminal::is_terminal(&std::io::stdin());
         if !args.foreground && from_console {
             drop(_lock);
-            if detach() {
+            if detach(&args) {
                 println!(
                     "wipe is running in your system tray (menu: open board, phone link, quit)."
                 );
@@ -195,6 +334,7 @@ mod imp {
             let mut pids = [0u32; 2];
             if GetConsoleProcessList(pids.as_mut_ptr(), 2) == 1 {
                 FreeConsole();
+                null_std_handles();
             }
         }
 
@@ -284,6 +424,7 @@ mod imp {
         let phone = MenuItem::new("Open on phone… (QR codes)", false, None);
         let copy = MenuItem::new("Copy phone link", false, None);
         let login = CheckMenuItem::new("Start at login", true, autostart::is_enabled(), None);
+        let shortcut = MenuItem::new("Create shortcut", cfg!(windows), None);
         let quit = MenuItem::new("Quit wipe", true, None);
         let menu = Menu::new();
         menu.append_items(&[
@@ -294,6 +435,7 @@ mod imp {
             &copy,
             &PredefinedMenuItem::separator(),
             &login,
+            &shortcut,
             &PredefinedMenuItem::separator(),
             &quit,
         ])
@@ -302,6 +444,8 @@ mod imp {
         let urls: Arc<Mutex<Vec<wipe_daemon::ShownUrl>>> = Arc::default();
         let mut tray = None;
         let mut server = server;
+        // `--open` (the desktop shortcut): open the board once it is served.
+        let mut open_when_ready = args.open;
         let local_url = move |urls: &[wipe_daemon::ShownUrl]| {
             urls.first()
                 .map(|u| u.url.clone())
@@ -330,6 +474,9 @@ mod imp {
                     });
                     phone.set_enabled(true);
                     copy.set_enabled(remote > 0);
+                    if std::mem::take(&mut open_when_ready) {
+                        open_url(&local_url(&list));
+                    }
                     *urls.lock().unwrap() = list;
                 }
                 Event::UserEvent(UserEvent::Stopped(err)) => {
@@ -339,9 +486,10 @@ mod imp {
                         None => "wipe - server stopped".to_string(),
                     });
                 }
-                Event::UserEvent(UserEvent::Tray(TrayIconEvent::Click {
+                // Double-click opens the board (a single click would open it on
+                // the first half of every double-click too).
+                Event::UserEvent(UserEvent::Tray(TrayIconEvent::DoubleClick {
                     button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
                     ..
                 })) => open_url(&local_url(&urls.lock().unwrap())),
                 Event::UserEvent(UserEvent::Menu(e)) => {
@@ -367,6 +515,12 @@ mod imp {
                             let _ = g.save();
                         }
                         login.set_checked(autostart::is_enabled());
+                    } else if e.id == shortcut.id() {
+                        #[cfg(windows)]
+                        shortcut.set_text(match create_shortcut() {
+                            Ok(_) => "Create shortcut  ✓ on your desktop".to_string(),
+                            Err(e) => format!("Create shortcut - failed: {e}"),
+                        });
                     } else if e.id == quit.id() {
                         let _ = stop_tx.send(true);
                         if let Some(h) = server.take() {
@@ -383,5 +537,22 @@ mod imp {
                 _ => {}
             }
         })
+    }
+
+    #[cfg(all(test, windows))]
+    mod tests {
+        #[test]
+        fn the_shortcut_icon_is_a_well_formed_ico() {
+            let ico = super::ico_bytes(64);
+            // ICONDIR: reserved, type 1 (icon), one image.
+            assert_eq!(&ico[..6], &[0, 0, 1, 0, 1, 0]);
+            let len = u32::from_le_bytes(ico[14..18].try_into().unwrap()) as usize;
+            let offset = u32::from_le_bytes(ico[18..22].try_into().unwrap()) as usize;
+            assert_eq!((offset, offset + len), (22, ico.len()));
+            // A 64x64, 32-bit DIB whose height covers image + mask.
+            assert_eq!(u32::from_le_bytes(ico[26..30].try_into().unwrap()), 64);
+            assert_eq!(u32::from_le_bytes(ico[30..34].try_into().unwrap()), 128);
+            assert_eq!(u16::from_le_bytes(ico[36..38].try_into().unwrap()), 32);
+        }
     }
 }
