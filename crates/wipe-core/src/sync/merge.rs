@@ -297,7 +297,19 @@ fn merge_value(
                 Some(Value::Array(a)) => a,
                 _ => &empty,
             };
-            Some(Value::Array(merge_array(ctx, ptr, ba, oa, ta)))
+            let mut merged = merge_array(ctx, ptr, ba, oa, ta);
+            // Append-only logs read in time order: both sides' new entries
+            // interleave by when they happened, not by which side merged.
+            if matches!(key, "activity" | "comments") {
+                let when = |v: &Value| {
+                    v.get("ts")
+                        .or_else(|| v.get("created"))
+                        .and_then(Value::as_str)
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                };
+                merged.sort_by_key(when);
+            }
+            Some(Value::Array(merged))
         }
         // Counters and timestamps only ever move forward.
         (Some(Value::Number(x)), Some(Value::Number(y)))

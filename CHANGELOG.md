@@ -14,6 +14,29 @@
   shortcut with the wipe icon on your desktop. It opens the board, starting
   the tray first if it isn't running (`wipe tray --open`).
 
+### Board sync hardening (an audit of commit, sync and history)
+
+- **Taking something back from the history never silently discards your
+  uncommitted work.** Bringing a ticket or post back as it was after an older
+  commit replaced it outright - including edits you hadn't committed yet. Now
+  it stops and names them: the board asks before replacing, `wipe restore`
+  needs `--discard-local`. (Applying *incoming* changes one at a time already
+  merged with your edits and still does.)
+- **A rewritten wipe branch no longer causes false conflicts.** When the
+  remote branch was force-pushed or recreated (even with the same content),
+  edits made meanwhile clashed with values that hadn't changed. Your board's
+  last synced state is now the merge base, so only real differences count.
+- **Activity and comments merge in time order.** Entries both sides added
+  were placed by which side merged, so a later rename could show above an
+  earlier one; they now interleave by their timestamps.
+- **A fresh clone stays clean.** An agent's first `wipe sync` (or `commit`,
+  `restore`) registered it on the board and left "identities updated" as an
+  uncommitted change; agents are now registered when they first write
+  something.
+- **Refresh fetches.** The board's Refresh button now asks the remote too, so
+  what teammates just committed shows up at once instead of within a minute.
+- Incoming renames show who made them.
+
 ## 1.1.1 - 2026-11-10
 
 - **`wipe update` no longer hangs the shell that ran it.** When it restarts

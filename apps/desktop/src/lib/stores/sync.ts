@@ -308,7 +308,23 @@ export async function takeChange(c: SyncChange): Promise<boolean> {
   syncError.set(null);
   try {
     // Every change to the same entity goes together.
-    const r = await api.syncTake(project(), source, [entityOf(c)], resolutions());
+    let r = await api.syncTake(project(), source, [entityOf(c)], resolutions());
+    // Bringing back an old version over uncommitted work: only when you say so.
+    if (!r.ok && r.discards?.length) {
+      const ids = r.discards.join(', ');
+      const ok = confirm(
+        `${ids} ${r.discards.length === 1 ? 'has' : 'have'} uncommitted changes of yours.
+
+` +
+          `Bringing back the version from ${commit?.short ?? 'that commit'} replaces ` +
+          `${r.discards.length === 1 ? 'it' : 'them'} and discards those changes. Continue?`
+      );
+      if (!ok) {
+        syncError.set(`Kept your uncommitted changes on ${ids} - nothing was taken.`);
+        return false;
+      }
+      r = await api.syncTake(project(), source, [entityOf(c)], resolutions(), true);
+    }
     if (!r.ok) {
       const add = (r.conflicts ?? []).filter((n) => !get(conflicts).some((o) => o.id === n.id));
       conflicts.update((cs) => [...cs, ...add]);

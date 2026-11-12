@@ -595,6 +595,46 @@ fn two_peoples_agents_with_one_name_stay_two_identities() {
 }
 
 #[test]
+fn logs_merge_in_time_order_and_rewritten_history_merges_from_your_board() {
+    use crate::ops;
+    let w = world();
+    let t = create(&w.a, "Logged", "todo").id;
+    commit_ok(&w.a, None);
+    let b = clone(&w, "b");
+    // A comments first, B a moment later; A publishes first.
+    ops::add_comment(&w.a, &t, "ada", "first", Utc::now()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    ops::add_comment(&b, &t, "bob", "second", Utc::now()).unwrap();
+    commit_ok(&w.a, None);
+    commit_ok(&b, None);
+    let bodies: Vec<String> = b
+        .load_ticket(&t)
+        .unwrap()
+        .comments
+        .into_iter()
+        .map(|c| c.body)
+        .collect();
+    assert_eq!(
+        bodies,
+        ["first", "second"],
+        "in the order they were written"
+    );
+
+    // The branch is replaced by unrelated history with the same board: an
+    // edit made meanwhile merges cleanly instead of clashing with it.
+    let dir = w.a.root().to_path_buf();
+    let up = git(&dir, &["rev-parse", "origin/wipe^{tree}"]);
+    let root = git(&dir, &["commit-tree", up.trim(), "-m", "rewritten"]);
+    let spec = format!("{}:refs/heads/wipe", root.trim());
+    git(&dir, &["push", "-q", "-f", "origin", &spec]);
+    let mut tk = b.load_ticket(&t).unwrap();
+    tk.title = "edited meanwhile".into();
+    b.save_ticket(&tk).unwrap();
+    commit_ok(&b, None);
+    assert_eq!(b.load_ticket(&t).unwrap().title, "edited meanwhile");
+}
+
+#[test]
 fn a_clone_inside_another_board_gets_its_own_from_the_branch() {
     let w = world();
     // A directory with a board of its own, holding a fresh clone.
@@ -653,6 +693,7 @@ fn taking_incoming_changes_one_at_a_time() {
         &Source::Incoming,
         &[ticket("T-002")],
         &Resolutions::default(),
+        false,
     )
     .unwrap();
     assert!(t.conflicts.is_empty());
@@ -698,6 +739,7 @@ fn taking_incoming_changes_one_at_a_time() {
         &Source::Incoming,
         &[ticket("T-001")],
         &Resolutions::default(),
+        false,
     )
     .unwrap();
     assert!(t.synced);
@@ -754,11 +796,32 @@ fn taking_a_ticket_back_from_a_past_commit() {
     let entries = log(&w.a, 10).unwrap();
     assert_eq!(entries[0].place, "base");
 
+    // Uncommitted work on it is never discarded silently.
+    let mut t1 = w.a.load_ticket("T-001").unwrap();
+    t1.body = "unsaved notes".into();
+    w.a.save_ticket(&t1).unwrap();
+    let refused = take(
+        &w.a,
+        &Source::Commit(first.clone()),
+        &[ticket("T-001")],
+        &Resolutions::default(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(refused.discards, ["T-001"]);
+    assert_eq!(
+        w.a.load_ticket("T-001").unwrap().body,
+        "unsaved notes",
+        "nothing changed"
+    );
+
+    // Asked to: the old version replaces it, unsaved notes and all.
     take(
         &w.a,
         &Source::Commit(first),
         &[ticket("T-001")],
         &Resolutions::default(),
+        true,
     )
     .unwrap();
     assert_eq!(w.a.load_ticket("T-001").unwrap().title, "Original");

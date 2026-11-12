@@ -695,9 +695,14 @@ fn prepare(
     upstream: &str,
     res: &Resolutions,
 ) -> Result<Prepared> {
-    // A rewritten upstream merges from the common ancestor (or from nothing).
+    // Your working copy's changes are what it holds beyond the board it was
+    // last synced to - so that board is the merge base, even when the
+    // upstream history was rewritten since (force-pushed, recreated): its
+    // differences from that board then read as their changes, and yours
+    // never clash with content that didn't change. Only when that commit is
+    // gone is the common ancestor (or nothing) used.
     let merge_base = match base {
-        Some(b) if repo.git.is_ancestor(b, upstream) => Some(b.to_string()),
+        Some(b) if repo.git.rev(b).is_some() => Some(b.to_string()),
         Some(b) => repo.git.merge_base(b, upstream),
         None => None,
     };
@@ -1111,6 +1116,19 @@ pub struct Taken {
     pub synced: bool,
     /// Conflicts on what was asked for; when non-empty nothing was changed.
     pub conflicts: Vec<Conflict>,
+    /// Taken from a past commit, these (ticket / post ids) would lose
+    /// uncommitted changes of yours; when non-empty nothing was changed - take
+    /// again with `discard_local` to replace them anyway.
+    pub discards: Vec<String>,
+}
+
+/// The file that is an entity alone (a ticket's or a post's), if it has one.
+fn own_file(e: &Entity) -> Option<String> {
+    match e.scope.as_str() {
+        "ticket" => Some(format!("tickets/{}.json", e.id)),
+        "thread" => Some(format!("forum/{}.json", e.id)),
+        _ => None,
+    }
 }
 
 /// Whether conflict `c` concerns `e`.
@@ -1147,6 +1165,7 @@ pub fn take(
     source: &Source,
     entities: &[Entity],
     res: &Resolutions,
+    discard_local: bool,
 ) -> Result<Taken> {
     let repo = Repo::open(store).ok_or_else(|| Error::msg("not a git repository"))?;
     require_branch(&repo)?;
@@ -1155,6 +1174,7 @@ pub fn take(
         renumbered: Vec::new(),
         synced: false,
         conflicts: Vec::new(),
+        discards: Vec::new(),
     };
     let paths: BTreeSet<String> = entities.iter().flat_map(take::paths).collect();
     let paths = with_board(paths);
@@ -1170,7 +1190,26 @@ pub fn take(
                 .git
                 .rev(rev)
                 .ok_or_else(|| Error::msg(format!("no commit `{rev}`")))?;
-            repo.read(&repo.tree(Some(&rev))?, &paths)?
+            let files = repo.read(&repo.tree(Some(&rev))?, &paths)?;
+            // Bringing back an old version replaces the current one - but
+            // uncommitted work on it is only ever replaced on request.
+            if !discard_local {
+                let base_index = repo.base_tree(&state, base.as_deref())?;
+                let own: BTreeSet<String> = entities.iter().filter_map(own_file).collect();
+                let (b, w) = (repo.read(&base_index, &own)?, read_work(store, &own));
+                out.discards = entities
+                    .iter()
+                    .filter(|e| {
+                        own_file(e)
+                            .is_some_and(|p| w.get(&p) != b.get(&p) && w.get(&p) != files.get(&p))
+                    })
+                    .map(|e| e.id.clone())
+                    .collect();
+                if !out.discards.is_empty() {
+                    return Ok(out);
+                }
+            }
+            files
         }
         Source::Incoming => {
             let mut p = prepare(store, &repo, &state, base.as_deref(), &upstream, res)?;

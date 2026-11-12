@@ -417,6 +417,12 @@ fn ticket_changes(b: &Ticket, a: &Ticket, out: &mut Vec<Change>) {
         let mut c = Change::new("ticket", id, "renamed", &a.title);
         c.from = Some(b.title.clone());
         c.to = Some(a.title.clone());
+        // Who renamed it: the new activity's `renamed` entries.
+        for act in a.activity.iter().skip(b.activity.len()) {
+            if act.kind == "renamed" && !c.by.contains(&act.actor) {
+                c.by.push(act.actor.clone());
+            }
+        }
         out.push(c);
     }
     let mut fields: Vec<String> = Vec::new();

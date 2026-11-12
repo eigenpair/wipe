@@ -132,8 +132,14 @@ fn main() -> ExitCode {
             }
         }
         // An agent named by --agentid / $WIPE_AGENT shows up in the board's
-        // identity list like any other author (best-effort, insert-only).
-        if cli.agentid.is_some() || identity::agent_env().is_some() {
+        // identity list like any other author (best-effort, insert-only) -
+        // once it writes something. Syncing, committing and restoring author
+        // nothing on the board, so they leave it clean.
+        let authors = !matches!(
+            cli.command,
+            Command::Sync(_) | Command::Commit(_) | Command::Restore(_)
+        );
+        if authors && (cli.agentid.is_some() || identity::agent_env().is_some()) {
             identity::ensure_registered(&who, None, true);
         }
     }

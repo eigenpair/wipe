@@ -373,6 +373,10 @@ pub struct RestoreArgs {
     /// after it (see `wipe log`).
     #[arg(long)]
     pub from: String,
+    /// Replace them even if they have uncommitted changes of yours (which
+    /// are lost). Without it, such a restore is refused.
+    #[arg(long)]
+    pub discard_local: bool,
 }
 
 /// `wipe log`

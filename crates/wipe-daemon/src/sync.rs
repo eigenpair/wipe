@@ -228,6 +228,10 @@ pub struct TakeBody {
     entities: Vec<sync::Entity>,
     #[serde(default)]
     resolutions: Resolutions,
+    /// Replace tickets / posts with uncommitted changes when taking from a
+    /// past commit (otherwise answered with `{ok:false, discards}`).
+    #[serde(default)]
+    discard_local: bool,
 }
 
 /// `POST /api/sync/take` - bring single changes into your board: as they are
@@ -239,9 +243,21 @@ pub async fn take(
     Json(b): Json<TakeBody>,
 ) -> ApiResult {
     let store = store_for(&state, q.project)?;
-    let t = blocking(move || sync::take(&store, &b.source, &b.entities, &b.resolutions)).await?;
+    let t = blocking(move || {
+        sync::take(
+            &store,
+            &b.source,
+            &b.entities,
+            &b.resolutions,
+            b.discard_local,
+        )
+    })
+    .await?;
     if !t.conflicts.is_empty() {
         return Ok(Json(json!({ "ok": false, "conflicts": t.conflicts })));
+    }
+    if !t.discards.is_empty() {
+        return Ok(Json(json!({ "ok": false, "discards": t.discards })));
     }
     notify(&state);
     Ok(Json(json!({

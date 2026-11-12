@@ -50,6 +50,7 @@
   import BoardSettings from '$lib/components/BoardSettings.svelte';
   import ThemeToggle from '$lib/components/ThemeToggle.svelte';
   import SyncBar from '$lib/components/SyncBar.svelte';
+  import { refreshSync } from '$lib/stores/sync';
   import Button from '$lib/components/ui/Button.svelte';
   import type { Ticket } from '$lib/types';
 
@@ -165,6 +166,8 @@
     }
     await loadProjects();
     await loadBoard();
+    // Also ask the remote: what teammates committed shows up now, not within a minute.
+    await refreshSync({ fetch: true, force: true });
   }
 </script>
 

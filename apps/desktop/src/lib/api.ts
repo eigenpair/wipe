@@ -263,11 +263,12 @@ export const api = {
     project: string | undefined,
     source: 'incoming' | { commit: string },
     entities: SyncEntity[],
-    resolutions: SyncResolutions
-  ): Promise<SyncResult & { synced?: boolean }> {
+    resolutions: SyncResolutions,
+    discardLocal = false
+  ): Promise<SyncResult & { synced?: boolean; discards?: string[] }> {
     return req(`/api/sync/take${qs({ project })}`, {
       method: 'POST',
-      body: JSON.stringify({ source, entities, resolutions })
+      body: JSON.stringify({ source, entities, resolutions, discard_local: discardLocal })
     });
   },
 

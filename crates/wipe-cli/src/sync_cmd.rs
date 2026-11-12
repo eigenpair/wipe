@@ -219,7 +219,7 @@ pub fn sync(out: &Out, a: SyncArgs) -> Result<()> {
         if !a.no_fetch {
             sync::refresh(&s)?;
         }
-        return take(out, &s, &sync::Source::Incoming, &a.targets, &res);
+        return take(out, &s, &sync::Source::Incoming, &a.targets, &res, false);
     }
     let r = sync::sync(&s, !a.no_fetch, &res)?;
     if !r.conflicts.is_empty() {
@@ -540,12 +540,20 @@ fn take(
     source: &sync::Source,
     targets: &[String],
     res: &Resolutions,
+    discard_local: bool,
 ) -> Result<()> {
     let entities = targets
         .iter()
         .map(|t| entity(t))
         .collect::<Result<Vec<_>>>()?;
-    let t = sync::take(s, source, &entities, res)?;
+    let t = sync::take(s, source, &entities, res, discard_local)?;
+    if !t.discards.is_empty() {
+        bail!(
+            "{} {} uncommitted changes that restoring would discard - nothing was changed. Commit them first (wipe commit -m \"...\"), or restore anyway with --discard-local",
+            t.discards.join(", "),
+            if t.discards.len() == 1 { "has" } else { "have" }
+        );
+    }
     if !t.conflicts.is_empty() {
         return Err(Conflicts {
             conflicts: t.conflicts,
@@ -605,6 +613,7 @@ pub fn restore(out: &Out, a: RestoreArgs) -> Result<()> {
         &sync::Source::Commit(a.from),
         &a.targets,
         &Resolutions::default(),
+        a.discard_local,
     )
 }
 
