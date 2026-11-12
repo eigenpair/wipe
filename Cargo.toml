@@ -5,7 +5,7 @@ members = ["crates/wipe-core", "crates/wipe-cli", "crates/wipe-daemon"]
 [workspace.package]
 version = "1.1.2"
 edition = "2021"
-license = "MIT"
+license-file = "LICENSE"
 authors = ["Aiman <aiman@shabib.net>"]
 rust-version = "1.89"
 repository = "https://github.com/eigenpair/wipe"

@@ -2,6 +2,11 @@
 
 ## 1.1.3 - unreleased
 
+- **New license: PolyForm Strict 1.0.0.** wipe is now source-available, not
+  open source: you may use it for any noncommercial purpose, but not
+  distribute it or changes or new works based on it, and commercial use needs
+  a separate license. Versions up to and including 1.1.2 were released under
+  the MIT License and keep it.
 - **wipe supports git, and only git.** Identities and the people on a board
   come from git alone, and only inside a git repository; wipe no longer asks
   Plastic SCM, Mercurial, SVN, Fossil or Jujutsu who you are. Their user

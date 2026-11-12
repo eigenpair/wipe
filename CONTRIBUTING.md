@@ -3,6 +3,11 @@
 Thanks for your interest in contributing to `wipe`! This document covers
 what you need to build, test, and submit changes.
 
+**Licensing of contributions.** wipe is source-available under the
+PolyForm Strict License 1.0.0 (see `LICENSE`). By submitting a contribution you
+agree that the licensor may use, distribute and license it as part of wipe,
+under these or any other terms.
+
 ## Prerequisites
 
 - **Rust** (stable toolchain - see `rust-toolchain.toml` for the pinned

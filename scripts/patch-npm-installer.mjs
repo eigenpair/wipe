@@ -25,7 +25,7 @@
 //
 // Usage: node scripts/patch-npm-installer.mjs <path-to/binary-install.js>
 // (install.js is patched next to it).
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const file = process.argv[2];
@@ -65,6 +65,22 @@ s = s.replace(
 );
 writeFileSync(file, s);
 console.log(`patched ${file} -> Windows bsdtar extraction + WIPE_NPM_SHIM marker`);
+
+// --- license: the package.json cargo-dist writes has no SPDX id for PolyForm
+// Strict (it isn't on the SPDX list), so point npm at the shipped LICENSE.
+{
+  const pkg = join(dirname(file), "package.json");
+  try {
+    const j = JSON.parse(readFileSync(pkg, "utf8"));
+    j.license = "SEE LICENSE IN LICENSE";
+    writeFileSync(pkg, JSON.stringify(j, null, 2) + "\n");
+    // Ship the license text itself (this runs from the repo root).
+    copyFileSync("LICENSE", join(dirname(file), "LICENSE"));
+    console.log(`patched ${pkg} -> license: SEE LICENSE IN LICENSE`);
+  } catch (e) {
+    console.error(`package.json not patched (${e.message})`);
+  }
+}
 
 // --- 3: install.js -----------------------------------------------------------
 const installJs = join(dirname(file), "install.js");

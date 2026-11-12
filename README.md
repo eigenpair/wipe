@@ -359,4 +359,10 @@ for community expectations.
 
 ## License
 
-`wipe` is released under the [MIT License](https://github.com/eigenpair/wipe/blob/main/LICENSE-MIT).
+`wipe` is source-available under the
+[PolyForm Strict License 1.0.0](https://github.com/eigenpair/wipe/blob/main/LICENSE):
+you may use it for any noncommercial purpose (personal use, study, hobby
+projects, noncommercial organizations), but you may not distribute it, or
+changes or new works based on it, and commercial use needs a separate license
+from the licensor. Versions up to and including 1.1.2 were released under the
+MIT License, and those releases keep it.
