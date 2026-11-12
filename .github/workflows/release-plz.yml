@@ -14,6 +14,9 @@ on:
   push:
     tags:
       - "v*"
+  # Re-run a publish that failed (it publishes whatever version on main isn't
+  # on crates.io yet), without moving the tag.
+  workflow_dispatch:
 
 jobs:
   crates:
@@ -22,6 +25,8 @@ jobs:
     if: ${{ github.repository_owner == 'eigenpair' }}
     permissions:
       contents: read
+      # release-plz looks up the pull requests behind released commits.
+      pull-requests: read
     steps:
       - name: Checkout repository
         # Check out the `main` branch (not the detached tag) so release-plz can
