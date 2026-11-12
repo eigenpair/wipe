@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.4 - 2026-11-12
+
+1.1.3 reached crates.io only - a packaging error (the new license file) stopped
+its binaries, installers and npm package. 1.1.4 is the same release for every
+channel.
+
 ## 1.1.3 - 2026-11-12
 
 - **New license: PolyForm Strict 1.0.0.** wipe is now source-available, not

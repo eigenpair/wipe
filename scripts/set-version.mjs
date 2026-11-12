@@ -65,6 +65,18 @@ edit("Cargo.toml", (s) =>
   }
 }
 
+// Each published crate ships its own copy of LICENSE (`license-file =
+// "LICENSE"`): cargo-dist resolves the path from the repo root, cargo from the
+// crate, and only a crate-local copy satisfies both.
+for (const c of ["wipe-cli", "wipe-core", "wipe-daemon"]) {
+  const src = readFileSync(join(root, "LICENSE"), "utf8");
+  const dst = join(root, "crates", c, "LICENSE");
+  if (!existsSync(dst) || readFileSync(dst, "utf8") !== src) {
+    writeFileSync(dst, src);
+    console.log(`  updated crates/${c}/LICENSE`);
+  }
+}
+
 // Standalone Tauri wrapper crate.
 edit("apps/desktop/src-tauri/Cargo.toml", (s) =>
   s.replace(/(\nversion = ")[^"]*(")/, `$1${version}$2`)

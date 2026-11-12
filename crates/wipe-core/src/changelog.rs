@@ -96,6 +96,23 @@ mod tests {
         assert_eq!(rs.last().map(|r| r.version.as_str()), Some("0.1.0"));
     }
 
+    /// Every crate's LICENSE copy must match the repo's root LICENSE.
+    #[test]
+    fn crate_licenses_match_root() {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let Ok(root) = std::fs::read_to_string(format!("{base}/LICENSE")) else {
+            return;
+        };
+        for c in ["wipe-cli", "wipe-core", "wipe-daemon"] {
+            let copy =
+                std::fs::read_to_string(format!("{base}/crates/{c}/LICENSE")).unwrap_or_default();
+            assert!(
+                copy.replace("\r\n", "\n") == root.replace("\r\n", "\n"),
+                "crates/{c}/LICENSE is out of date - copy the root LICENSE over it"
+            );
+        }
+    }
+
     /// The crate's copy must match the repo's root CHANGELOG.md
     /// (`node scripts/set-version.mjs` or a plain copy refreshes it).
     #[test]
